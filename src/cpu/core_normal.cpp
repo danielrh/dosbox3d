@@ -17,6 +17,10 @@
  */
 
 #include <stdio.h>
+#include <sys/types.h>
+#include <sys/uio.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include "dosbox.h"
 #include "mem.h"
@@ -141,7 +145,108 @@ static INLINE Bit32u Fetchd() {
 #include "core_normal_fun.h"
 #endif
 
+Bit32u GetAddress(Bit16u seg, Bit32u offset);
+
+FILE *memlog = fopen("/tmp/mem.txt", "a");
+FILE *debuglog = fopen("/tmp/debug.txt", "a");
+
+int fire_fifo = open("/tmp/fire.fifo", O_RDONLY|O_NONBLOCK);
+
 Bits CPU_Core_Normal_Run(void) {
+    static int ctr = 0;
+#if 0
+    if ((ctr++ % 500) == 0) {
+        /*fprintf(memlog, "pos: ");
+        for (int addr = 0x1E6F2; addr < 0x1e6f2 + 12; addr += 4) {
+            unsigned int val;
+            mem_readd_checked(addr, &val);
+            fprintf(memlog, "%d ", (int)val);
+        }*/
+        for (int addr = 0xA9C2+0x13d30, i=0; i<0x3e; i += 1, addr+=12) {
+            unsigned int valx;
+            unsigned int valy;
+            unsigned int valz;
+            mem_readd_checked(addr, &valx);
+            mem_readd_checked(addr + 0x4, &valy);
+            mem_readd_checked(addr + 0x8, &valz);
+            if (valx != 0 || valy != 0 || valz != 0) {
+                fprintf(memlog, "%d:(%8d,%8d,%8d)", i, valx, valy, valz);
+            }
+        }
+        /*
+        fprintf(memlog, " pos: ");
+        for (int addr = 0xA9C2+0x13d30, i=0; i<6; i += 1, addr+=4) {
+            unsigned int val;
+            mem_readd_checked(addr, &val);
+            fprintf(memlog, "%.02f ", ((float)(int)val)/256.);
+            if (i == 2) {
+                addr += (0x3d - 1) * 12;
+            }
+        }
+        fprintf(memlog, " vel: ");
+        for (int addr = 0xCAE2+0x13d30, i=0; i<6; i += 1, addr+=4) {
+            unsigned int val;
+            mem_readd_checked(addr, &val);
+            fprintf(memlog, "%.02f ", ((float)(int)val)/256.);
+            if (i == 2) {
+                addr += (0x3d - 1) * 12;
+            }
+        }
+        fprintf(memlog, " RGT: ");
+        for (int addr = 0xAEB6+0x13d30, i=0; i<6; i += 1, addr+=4) {
+            unsigned int val;
+            mem_readd_checked(addr, &val);
+            fprintf(memlog, "%.02f ", ((float)(int)val)/256.);
+            if (i == 2) {
+                addr += (0x3d - 1) * 12;
+            }
+        }
+        fprintf(memlog, " UP: ");
+        for (int addr = 0xB1B6+0x13d30, i=0; i<6; i += 1, addr+=4) {
+            unsigned int val;
+            mem_readd_checked(addr, &val);
+            fprintf(memlog, "%.02f ", ((float)(int)val)/256.);
+            if (i == 2) {
+                addr += (0x3d - 1) * 12;
+            }
+        }
+        fprintf(memlog, " FWD: ");
+        for (int addr = 0xB4B6+0x13d30, i=0; i<6; i += 1, addr+=4) {
+            unsigned int val;
+            mem_readd_checked(addr, &val);
+            fprintf(memlog, "%.02f ", ((float)(int)val)/256.);
+            if (i == 2) {
+                addr += (0x3d - 1) * 12;
+            }
+        }
+        */
+        fprintf(memlog, "\n");
+        fflush(memlog);
+    }
+#endif
+    {
+        char buf[1];
+        if (read(fire_fifo, &buf, 1) > 0) {
+            fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
+            CPU_Push16((Bit16u)SegValue(cs));
+            CPU_Push16((Bit16u)reg_eip);
+            Bit8u shellcode[] = {
+                0x00, // nul terminate string
+                // push flags, push all regs, xor si,si, push si
+                0x9C, 0x60, 0x33, 0xF6, 0x56,
+                // call far 12d7:0156
+                0x9A, 0x56, 0x01, 0xd7, 0x12,
+                // pop si, pop all regs, pop flags, retf
+                0x5E, 0x61, 0x9D, 0xCB
+            };
+            for (int i = 0; i < sizeof(shellcode); i++) {
+                mem_writeb_checked(0x13d30 + 0x0187 + i, shellcode[i]);
+            }
+            SegSet16(cs, 0x13d3);
+            reg_eip = 0x0188;
+            fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
+        }
+    }
 	while (CPU_Cycles-->0) {
 		LOADIP;
 		core.opcode_index=cpu.code.big*0x200;
