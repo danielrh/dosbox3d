@@ -1677,9 +1677,9 @@ public:
 			break;
 		case MK_pause:
 #if SDL_VERSION_ATLEAST(2,0,0)
-			key=SDL_SCANCODE_PAUSE;
+			key=SDL_SCANCODE_GRAVE;
 #else
-			key=SDLK_PAUSE;
+			key=SDLK_BACKQUOTE;
 #endif
 			break;
 		case MK_printscreen:

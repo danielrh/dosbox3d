@@ -447,6 +447,7 @@ void DrawCursor() {
 }
 
 void Mouse_CursorMoved(float xrel,float yrel,float x,float y,bool emulate) {
+    //return;
 	float dx = xrel * mouse.pixelPerMickey_x;
 	float dy = yrel * mouse.pixelPerMickey_y;
 
