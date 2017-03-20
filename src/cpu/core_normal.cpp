@@ -21,7 +21,7 @@
 #include <sys/uio.h>
 #include <fcntl.h>
 #include <unistd.h>
-
+#include <stdint.h>
 #include "dosbox.h"
 #include "mem.h"
 #include "cpu.h"
@@ -152,9 +152,9 @@ FILE *debuglog = fopen("/tmp/debug.txt", "a");
 
 int fire_fifo = open("/tmp/fire.fifo", O_RDONLY|O_NONBLOCK);
 
-Bits CPU_Core_Normal_Run(void) {
-    static int ctr = 0;
+void process_network() {
 #if 0
+    static int ctr = 0;
     if ((ctr++ % 500) == 0) {
         /*fprintf(memlog, "pos: ");
         for (int addr = 0x1E6F2; addr < 0x1e6f2 + 12; addr += 4) {
@@ -227,27 +227,98 @@ Bits CPU_Core_Normal_Run(void) {
     {
         char buf[1];
         if (read(fire_fifo, &buf, 1) > 0) {
+            uint32_t gun_id = 0;
+            uint32_t ship_id = 0;
+            if (buf[0] >= '0' && buf[0] <= '9') {
+                gun_id = buf[0] - '0';
+            } else if (buf[0] >= 'a' && buf[0] <= 'z') {
+                gun_id = buf[0] - 'a';
+                ship_id = 1;
+            } else if (buf[0] >= 'A' && buf[0] <= 'Z') {
+                gun_id = buf[0] - 'A';
+                ship_id = 2;
+            }
             fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
             CPU_Push16((Bit16u)SegValue(cs));
             CPU_Push16((Bit16u)reg_eip);
-            Bit8u shellcode[] = {
-                0x00, // nul terminate string
-                // push flags, push all regs, xor si,si, push si
-                0x9C, 0x60, 0x33, 0xF6, 0x56,
-                // call far 12d7:0156
-                0x9A, 0x56, 0x01, 0xd7, 0x12,
-                // pop si, pop all regs, pop flags, retf
-                0x5E, 0x61, 0x9D, 0xCB
-            };
-            for (int i = 0; i < sizeof(shellcode); i++) {
-                mem_writeb_checked(0x13d30 + 0x0187 + i, shellcode[i]);
+            uint32_t data_segment_start = 0x13d30;
+            uint32_t loading_wing_commander_start = 0x0187;
+            if (buf[0] == ' ') { // fire all guns
+                Bit8u shellcode[] = {
+                    0x00, // nul terminate string
+                    // push flags, push all regs, xor si,si, push si
+                    0x9C, 0x60, 0x33, 0xF6, 0x56,
+                    // call far 12d7:0156
+                    0x9A, 0x56, 0x01, 0xd7, 0x12,
+                    // pop si, pop all regs, pop flags, retf
+                    0x5E, 0x61, 0x9D, 0xCB
+                };
+                for (int i = 0; i < sizeof(shellcode); i++) {
+                    mem_writeb_checked(data_segment_start + loading_wing_commander_start + i, shellcode[i]);
+                }
+            } else if (buf[0] == ',') {
+                Bit8u shellcode[] = {
+                    0x00, // nul terminate string
+                    // push flags, push all regs, xor si,si, push si
+                    0x9C, 0x60, 0x33, 0xF6, 0x56, 0x56,
+                    // call far 12d7:012E
+                    0x9A, 0x56, 0x01, 0xd7, 0x12,
+                    // pop si, pop all regs, pop flags, retf
+                    0x5E, 0x5E, 0x61, 0x9D, 0xCB
+                };
+                for (int i = 0; i < sizeof(shellcode); i++) {
+                    mem_writeb_checked(data_segment_start + loading_wing_commander_start + i, shellcode[i]);
+                }
+            } else if (buf[0] == '.') {
+                Bit8u shellcode[] = {
+                    0x00, // nul terminate string
+                    // push flags, push all regs, xor si,si, push si
+                    0x9C, 0x60,
+                    0xbe, 0, 0,// mov si <-- gun_id
+                    0x56,
+                    // call far 12d7:0156
+                    0x9A, 0x56, 0x01, 0xd7, 0x12,
+                    // pop si, pop all regs, pop flags, retf
+                    0x5E, 0x61, 0x9D, 0xCB
+                };
+                for (int i = 0; i < sizeof(shellcode); i++) {
+                    mem_writeb_checked(data_segment_start + loading_wing_commander_start + i, shellcode[i]);
+                }
+            } else { // fire one gun from a selected ship
+                Bit8u shellcode[] = {
+                    0x00, // nul terminate string
+                    // push flags,
+                    0x9C, //PUSHF
+                    //push all regs, xor si,si, push si
+                    0x60, //PUSHA
+                    0xbe, gun_id & 0xff, gun_id >> 8,// mov si <-- gun_id
+                    0x56, // push si
+                    0xbe, ship_id & 0xff, ship_id >> 8, // mov si <- ship_id
+                    0x56, // push si
+                    // call far 12d7:012E
+                    0x9A, 0x2E, 0x01, 0xd7, 0x12,
+                    // pop si, pop si, pop all regs, pop flags, retf
+                    0x5E, 0x5E, 0x61, 0x9D, 0xCB
+                };
+                for (int i = 0; i < sizeof(shellcode); i++) {
+                    mem_writeb_checked(data_segment_start + loading_wing_commander_start + i, shellcode[i]);
+                }                
             }
-            SegSet16(cs, 0x13d3);
-            reg_eip = 0x0188;
+            SegSet16(cs, data_segment_start >> 4);
+            reg_eip = loading_wing_commander_start + 1;
             fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
         }
     }
+
+}
+Bits CPU_Core_Normal_Run(void) {
 	while (CPU_Cycles-->0) {
+        if (SegValue(cs) == 0x0560 && reg_eip == 0x20e3) {
+            // this is the beginning of the WC main loop while in fighting.
+            // then we can process network commands here and introduce things
+            // before the frame is processed in a predictable place
+            process_network();
+        }
 		LOADIP;
 		core.opcode_index=cpu.code.big*0x200;
 		core.prefixes=cpu.code.big;

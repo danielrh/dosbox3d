@@ -1677,9 +1677,17 @@ public:
 			break;
 		case MK_pause:
 #if SDL_VERSION_ATLEAST(2,0,0)
+#ifdef __APPLE__
 			key=SDL_SCANCODE_GRAVE;
 #else
+            key=SDL_SCANCODE_PAUSE;
+#endif
+#else
+#ifdef __APPLE__
 			key=SDLK_BACKQUOTE;
+#else
+            key=SDL_SCANCODE_PAUSE;
+#endif
 #endif
 			break;
 		case MK_printscreen:
