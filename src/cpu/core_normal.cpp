@@ -22,6 +22,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <stdint.h>
+#include <errno.h>
 #include "dosbox.h"
 #include "mem.h"
 #include "cpu.h"
@@ -44,6 +45,7 @@
 #define SaveMw(off,val)	mem_writew(off,val)
 #define SaveMd(off,val)	mem_writed(off,val)
 #else 
+#error "Inline is set"
 #include "paging.h"
 #define LoadMb(off) mem_readb_inline(off)
 #define LoadMw(off) mem_readw_inline(off)
@@ -152,6 +154,8 @@ FILE *debuglog = fopen("/tmp/debug.txt", "a");
 
 int fire_fifo = open("/tmp/fire.fifo", O_RDONLY|O_NONBLOCK);
 
+int manualDoDamage = 0;
+
 void process_network() {
 #if 0
     static int ctr = 0;
@@ -227,17 +231,6 @@ void process_network() {
     {
         char buf[1];
         if (read(fire_fifo, &buf, 1) > 0) {
-            uint32_t gun_id = 0;
-            uint32_t ship_id = 0;
-            if (buf[0] >= '0' && buf[0] <= '9') {
-                gun_id = buf[0] - '0';
-            } else if (buf[0] >= 'a' && buf[0] <= 'z') {
-                gun_id = buf[0] - 'a';
-                ship_id = 1;
-            } else if (buf[0] >= 'A' && buf[0] <= 'Z') {
-                gun_id = buf[0] - 'A';
-                ship_id = 2;
-            }
             fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
             CPU_Push16((Bit16u)SegValue(cs));
             CPU_Push16((Bit16u)reg_eip);
@@ -284,7 +277,20 @@ void process_network() {
                 for (int i = 0; i < sizeof(shellcode); i++) {
                     mem_writeb_checked(data_segment_start + loading_wing_commander_start + i, shellcode[i]);
                 }
-            } else { // fire one gun from a selected ship
+            } else if (buf[0] == 'f') { // fire one gun from a selected ship
+                buf[0] = 0;
+                read(fire_fifo, &buf, 1);
+                uint32_t gun_id = 0;
+                uint32_t ship_id = 0;
+                if (buf[0] >= '0' && buf[0] <= '9') {
+                    gun_id = buf[0] - '0';
+                } else if (buf[0] >= 'a' && buf[0] <= 'z') {
+                    gun_id = buf[0] - 'a';
+                    ship_id = 1;
+                } else if (buf[0] >= 'A' && buf[0] <= 'Z') {
+                    gun_id = buf[0] - 'A';
+                    ship_id = 2;
+                }
                 Bit8u shellcode[] = {
                     0x00, // nul terminate string
                     // push flags,
@@ -303,7 +309,48 @@ void process_network() {
                 for (int i = 0; i < sizeof(shellcode); i++) {
                     mem_writeb_checked(data_segment_start + loading_wing_commander_start + i, shellcode[i]);
                 }                
+            } else if (buf[0] == 'd') {
+                unsigned short arg_0, arg_2, arg_4, arg_6;
+                char argbuf[100] = {0};
+                int i;
+                for (i = 0; i < 99;) {
+                    if (read(fire_fifo, argbuf + i, 1) <= 0) {
+                        if (errno != EAGAIN && errno != EINTR) {
+                            break;
+                        }
+                    } else {
+                        if (argbuf[i] == '\n') {
+                            break;
+                        }
+                        i++;
+                    }
+                }
+                argbuf[i] = '\0';
+                sscanf(argbuf ,"%hd %hd %hd %hd", &arg_0, &arg_2, &arg_4, &arg_6);
+                Bit8u shellcode[] = {
+                    0x00, // nul terminate string
+                    // push flags,
+                    0x9C, //PUSHF
+                    //push all regs, xor si,si, push si
+                    0x60, //PUSHA
+                    0xbe, arg_6 & 0xff, arg_6 >> 8,
+                    0x56, // push si
+                    0xbe, arg_4 & 0xff, arg_4 >> 8,
+                    0x56, // push si
+                    0xbe, arg_2 & 0xff, arg_2 >> 8,
+                    0x56, // push si
+                    0xbe, arg_0 & 0xff, arg_0 >> 8,
+                    0x56, // push si
+                    // call far 12d7:012E
+                    0x9A, 0x84, 0x00, 0xd7, 0x12,
+                    // pop si, pop si, pop all regs, pop flags, retf
+                    0x5E, 0x5E, 0x5E, 0x5E, 0x61, 0x9D, 0xCB
+                };
+                for (int i = 0; i < sizeof(shellcode); i++) {
+                    mem_writeb_checked(data_segment_start + loading_wing_commander_start + i, shellcode[i]);
+                }                
             }
+            manualDoDamage ++;
             SegSet16(cs, data_segment_start >> 4);
             reg_eip = loading_wing_commander_start + 1;
             fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
@@ -311,8 +358,40 @@ void process_network() {
     }
 
 }
+
+bool isExecutingFunction(Bit16u stubSeg, Bit16u stubOff) {
+    Bit8u instType = mem_readb(stubSeg * 0x10 + stubOff);
+    if (instType != 0xea) {
+        return false;
+    }
+    Bit16u realOff = mem_readw(stubSeg * 0x10 + stubOff + 1);
+    Bit16u realSeg = mem_readw(stubSeg * 0x10 + stubOff + 3);
+    if (SegValue(cs) == realSeg && reg_eip == realOff) {
+        return true;
+    }
+    return false;
+}
+
 Bits CPU_Core_Normal_Run(void) {
 	while (CPU_Cycles-->0) {
+        if (isExecutingFunction(0x12d7, 0x0084)) {
+            // beginning of doDamage.
+            if (manualDoDamage) {
+                manualDoDamage --;
+            } else {
+                Bit16u arg0 = mem_readw(0x13d30 + reg_esp + 4);
+                Bit16u arg2 = mem_readw(0x13d30 + reg_esp + 6);
+                Bit16u arg4 = mem_readw(0x13d30 + reg_esp + 8);
+                Bit16u arg6 = mem_readw(0x13d30 + reg_esp + 10);
+                Bit32u xcoord = mem_readd(0x13d30 + arg6);
+                Bit32u ycoord = mem_readd(0x13d30 + arg6 + 4);
+                Bit32u zcoord = mem_readd(0x13d30 + arg6 + 8);
+                Bit32u randomSeed = mem_readd(0x13d30 + 0x7728);
+                fprintf(stderr, "\r\ndoDamage(%d, %d, %d, <%d, %d, %d>) rng=%x\r\n",
+                    arg0, arg2, arg4, xcoord, ycoord, zcoord, randomSeed);
+                reg_eip = 0x0d44;
+            }
+        }
         if (SegValue(cs) == 0x0560 && reg_eip == 0x20e3) {
             // this is the beginning of the WC main loop while in fighting.
             // then we can process network commands here and introduce things

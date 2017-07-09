@@ -491,6 +491,10 @@ Bit8u mem_readb(PhysPt address) {
 }
 
 Bit16u mem_readw(PhysPt address) {
+    /*if (address == 0x13d30 + 0x4a37) {
+        fprintf(stderr, "Shield found! cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
+        mem_writew(address, mem_readw_inline(address) ^ 1);
+    }*/
 	return mem_readw_inline(address);
 }
 
