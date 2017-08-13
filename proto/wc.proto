@@ -1,0 +1,66 @@
+syntax = "proto2";
+message Damage {
+        optional sfixed32 xcoord = 1;
+        optional sfixed32 ycoord = 2;
+        optional sfixed32 zcoord = 3;
+        optional uint32 src = 4; // 16 bits
+        optional uint32 quantity = 5; // 16 its
+        optional uint32 arg6 = 6; // 16 bits
+        optional fixed32 seed = 7;
+}
+
+message Position {
+        optional sfixed32 xcoord = 1;
+        optional sfixed32 ycoord = 2;
+        optional sfixed32 zcoord = 3;
+        optional sint32 vx = 4; // 16 bits
+        optional sint32 vy = 5; // 16 bits
+        optional sint32 vz = 6; // 16 bits
+        optional sint32 fore = 7; // 16 bits
+        optional sint32 up = 8; // 16 bits
+        optional sint32 right = 9; // 16 bits
+}
+
+message WeaponFire {
+        optional uint32 gun_id = 1; // 4 bits
+}
+
+message ShipUpdate {
+        optional uint32 ship_id = 1; // 16 bits
+        optional Position pos = 2;
+        repeated Damage damage = 3;
+        repeated WeaponFire fire = 4;
+
+        optional string callsign_update = 255;
+}
+
+enum GameState {
+     Proceed = 0;
+     EndVictory = 1;
+     EndDefeat = 2;
+}
+
+enum AutoPilotState {
+     Disengaged = 0;
+     Engaged = 1;
+     Finished = 2;
+}
+
+message Frame {
+    optional uint32 player_id = 1;
+    repeated ShipUpdate update = 2; // one update per updated ship
+    repeated string chat = 3;
+    optional AutoPilotState autopiloting = 14;
+    optional GameState game_update = 15;
+}
+
+// Connect -> once per mission
+message Connect {
+    optional string callsign = 1;
+}
+
+message Game {
+    optional uint32 mission_id = 1;
+    optional uint32 assigned_player_id = 2;
+    optional Frame starting_state = 3;
+}

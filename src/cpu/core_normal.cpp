@@ -269,7 +269,7 @@ void process_network() {
                     0x9C, 0x60,
                     0xbe, 0, 0,// mov si <-- gun_id
                     0x56,
-                    // call far 12d7:0156
+                    // call far 12d7:012E
                     0x9A, 0x56, 0x01, 0xd7, 0x12,
                     // pop si, pop all regs, pop flags, retf
                     0x5E, 0x61, 0x9D, 0xCB
