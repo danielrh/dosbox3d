@@ -21,6 +21,7 @@
 #include <sys/uio.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <stdlib.h>
 #include <stdint.h>
 #include <errno.h>
 #include "dosbox.h"
@@ -32,6 +33,12 @@
 #include "pic.h"
 #include "fpu.h"
 #include "paging.h"
+#include <vector>
+#include <arpa/inet.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netdb.h>
+#include <stdio.h>
 
 #if C_DEBUG
 #include "debug.h"
@@ -210,7 +217,160 @@ public:
     }
 };
 
+struct ServerState {
+	int listenSocket;
+	std::vector<int> clients;
+} *server;
+
+struct ClientState {
+	int clientSocket;
+} *client;
+
+class Config {
+public:
+    char *host;
+    char *portstr;
+    uint16_t port;
+    Config() {
+        host = getenv("WCHOST");
+        portstr = getenv("WCPORT");
+        port = portstr ? (uint16_t)atoi(portstr) : 0;
+        if (port < 1024) {
+            fprintf(stderr, "You must set the WCPORT and (optionally) WCHOST env variables!\n");
+            abort();
+        }
+    }
+} config;
+
+void init_network() {
+    struct addrinfo hints, *res, *res0;
+    int error;
+    int s;
+    const char *cause = NULL;
+
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = PF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    if (config.host && config.host[0]) {
+        client = new ClientState();
+        error = getaddrinfo(config.host, config.portstr, &hints, &res0);
+    } else {
+	    server = new ServerState();
+        hints.ai_flags = AI_PASSIVE;
+        error = getaddrinfo(NULL, config.portstr, &hints, &res0);
+    }
+    if (error) {
+        fprintf(stderr, "getaddrinfo %s\n", gai_strerror(error));
+        abort();
+    }
+    s = -1;
+    for (res = res0; res; res = res->ai_next) {
+        s = socket(res->ai_family, res->ai_socktype,
+            res->ai_protocol);
+        if (s < 0) {
+                cause = "socket";
+                continue;
+        }
+
+        if (server) {
+            if (bind(s, res->ai_addr, res->ai_addrlen) < 0) {
+                cause = "connect";
+                close(s);
+                s = -1;
+                continue;
+            }
+            if (listen(s, 5) < 0) {
+                cause = "listen";
+                close(s);
+                s = -1;
+                continue;
+            }
+        } else {
+            if (connect(s, res->ai_addr, res->ai_addrlen) < 0) {
+                cause = "connect";
+                close(s);
+                s = -1;
+                continue;
+            }
+        }
+
+        break;  /* okay we got one */
+    }
+    if (s < 0) {
+            fprintf(stderr, "socket/connect %s\n", cause);
+            abort();
+    }
+    freeaddrinfo(res0);
+    if (server) {
+        server->listenSocket = s;
+    }
+    if (client) {
+        client->clientSocket = s;
+    }
+}
+
+//GameState gs;
+
+void recv_msg(int sock) {
+    char data[1];
+    if (recv(sock, data, 1, 0) <= 0) {
+        // We need to handle disconnects here.
+        perror("recv failed");
+        abort();
+    }
+    printf("got %c\n", data[0]);
+}
+
+void send_msg(int sock, const char *data) {
+    if (send(sock, data, 1, 0) < 0) {
+        // We need to handle disconnects here.
+        perror("send failed");
+        abort();
+    }
+}
+
 void process_network() {
+    if (!client && !server) {
+        init_network();
+        if (client) {
+            send_msg(client->clientSocket, "b"); // Connect
+            recv_msg(client->clientSocket); // GameState
+        }
+    }
+
+    if (server) {
+        for (int c : server->clients) {
+            recv_msg(c); // Frame
+        }
+        for (int c : server->clients) {
+            send_msg(c, "s"); // Frame
+        }
+        while (true) {
+            int flags = fcntl(server->listenSocket, F_GETFL, 0);
+            if (server->clients.empty()) {
+                fcntl(server->listenSocket, F_SETFL, flags & ~O_NONBLOCK);
+            } else {
+                fcntl(server->listenSocket, F_SETFL, flags | O_NONBLOCK);
+            }
+            sockaddr addr;
+            socklen_t addrlen = sizeof(addr);
+            int s = accept(server->listenSocket, &addr, &addrlen);
+            if (s < 0) {
+                break;
+            }
+            flags = fcntl(server->listenSocket, F_GETFL, 0);
+            fcntl(server->listenSocket, F_SETFL, flags & ~O_NONBLOCK);
+            server->clients.push_back(s);
+            recv_msg(s); // Connect
+            send_msg(s, "g"); // GameState
+        }
+    } else {
+        send_msg(client->clientSocket, "c"); // Frame
+        recv_msg(client->clientSocket); // Frame
+    }
+
+
+
 #if 0
     static int ctr = 0;
     if ((ctr++ % 500) == 0) {
