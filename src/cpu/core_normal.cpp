@@ -156,6 +156,60 @@ int fire_fifo = open("/tmp/fire.fifo", O_RDONLY|O_NONBLOCK);
 
 int manualDoDamage = 0;
 
+//template <T... NumArgs>
+template <int NumArgs, Bit16u stubSeg, Bit16u stubOff>
+class Forwarder {
+    int manualCount;
+    //Bit16u stubSeg;
+    //Bit16u stubOff;
+public:
+    Forwarder() : manualCount(0) {
+    }
+
+    void call(const Bit16u(&)[NumArgs], int rng) {
+        /*
+        CPU_Push16((Bit16u)SegValue(cs));
+        CPU_Push16((Bit16u)reg_eip);
+        uint32_t data_segment_start = 0x13d30;
+        uint32_t loading_wing_commander_start = 0x0187;
+        Bit8u shellcode[] = {
+            0x00, // nul terminate string
+            // push flags,
+            0x9C, //PUSHF
+            //push all regs, xor si,si, push si
+            0x60, //PUSHA
+            0xbe, arg_6 & 0xff, arg_6 >> 8,
+            0x56, // push si
+            0xbe, arg_4 & 0xff, arg_4 >> 8,
+            0x56, // push si
+            0xbe, arg_2 & 0xff, arg_2 >> 8,
+            0x56, // push si
+            0xbe, arg_0 & 0xff, arg_0 >> 8,
+            0x56, // push si
+            // call far 12d7:012E
+            0x9A, 0x84, 0x00, 0xd7, 0x12,
+            // pop si, pop si, pop all regs, pop flags, retf
+            0x5E, 0x5E, 0x5E, 0x5E, 0x61, 0x9D, 0xCB
+        };
+        for (int i = 0; i < sizeof(shellcode); i++) {
+            mem_writeb_checked(data_segment_start + loading_wing_commander_start + i, shellcode[i]);
+        }
+        manualDoDamage ++;
+        SegSet16(cs, data_segment_start >> 4);
+        reg_eip = loading_wing_commander_start + 1;
+        fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
+        */
+    }
+};
+
+class DoDamageForwarder {
+    int manualCount;
+public:
+    DoDamageForwarder()
+        : manualCount(0) {
+    }
+};
+
 void process_network() {
 #if 0
     static int ctr = 0;
@@ -348,7 +402,7 @@ void process_network() {
                 };
                 for (int i = 0; i < sizeof(shellcode); i++) {
                     mem_writeb_checked(data_segment_start + loading_wing_commander_start + i, shellcode[i]);
-                }                
+                }
             }
             manualDoDamage ++;
             SegSet16(cs, data_segment_start >> 4);
