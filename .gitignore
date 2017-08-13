@@ -38,6 +38,10 @@ Makefile
 /src/dosbox.html.mem
 /src/dosbox.js.orig.js
 /src/dosbox.js.tmp.js
+/src/wc.pb.cc
+/src/wc.pb.hh
+/src/wc.pb.h
+/src/wc.pb.o
 
 # Miscellaneous files
 
