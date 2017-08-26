@@ -13,6 +13,7 @@ Makefile.in
 /depcomp
 /install-sh
 /missing
+/ar-lib
 /stamp-h1
 
 # End of template. Additional autoconf and automake files follow.

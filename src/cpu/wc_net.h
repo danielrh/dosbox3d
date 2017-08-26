@@ -1,3 +1,6 @@
+#ifndef WC_NET_H_
+#define WC_NET_H_
+
 void process_network();
 void process_damage();
 class NetConfig {
@@ -9,3 +12,6 @@ public:
 };
 extern NetConfig net_config;
 
+#define STATIC_ASSERT(expr, message) do { int STATIC_ASSERTION(int[-!(expr)]); } while(0)
+
+#endif

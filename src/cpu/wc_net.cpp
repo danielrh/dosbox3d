@@ -40,7 +40,7 @@ ptrdiff_t send_or_recv_all(const SendOrRecvFunction &sorf, BufferType *buffer, s
         fprintf(stderr, "Warning: ask to send or recv of size 0\n");
     }
     const BufferType* constbuffer = const_cast<const BufferType *>(buffer);
-    static_assert(sizeof(*buffer)==1, "buffer must be possibly const char*");
+    STATIC_ASSERT(sizeof(*buffer)==1, "buffer must be possibly const char*");
 
     size_t read_so_far = 0;
     while (size) {
