@@ -94,9 +94,25 @@ public:
     }
 };
 
+struct RemoteClient {
+    int clientSocket;
+    std::string callsign;
+    RemoteClient() {
+        clientSocket = -1;
+    }
+    bool is_disconnected() const {
+        return clientSocket == -1;
+    }
+    void disconnect() {
+        if (clientSocket != -1) {
+            really_close(clientSocket);
+        }
+        clientSocket = -1;
+    }
+};
 struct ServerState {
 	int listenSocket;
-    typedef std::vector<int> ClientVec;
+    typedef std::vector<RemoteClient> ClientVec;
 	ClientVec clients;
     ServerState() {
         listenSocket = -1;
@@ -106,9 +122,7 @@ struct ServerState {
             really_close(listenSocket);
         }
         for (ServerState::ClientVec::iterator c = clients.begin(), ce=clients.end(); c != ce; ++c) {
-            if (*c != -1) {
-                really_close(*c);
-            }
+            c->disconnect();
         }
     }
 } *server;
@@ -202,7 +216,9 @@ void init_network() {
     if (s < 0) {
             fprintf(stderr, "socket error during ");
             perror(cause);
-            abort();
+            uninit_network();
+            freeaddrinfo(res0);
+            return;
     }
     freeaddrinfo(res0);
     if (server) {
@@ -314,6 +330,7 @@ RecvStatus send_msg(int sock, const NetworkMessage &msg) {
     toSend[0] = (char)(dataLength >> 16);
     toSend[1] = (char)(dataLength >> 8);
     toSend[2] = (char)(dataLength);
+    fprintf(stderr, "start send %d\n", dataLength);
     if (send_or_recv_all(SendFunctor(sock), toSend.data(), toSend.length()) < 0) {
         // We need to handle disconnects here.
         perror("send failed");
@@ -358,26 +375,24 @@ void process_network() {
 
     if (server) {
         for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
-            if (*c != -1) {
-                if (!recv_msg<&NetworkMessage::has_frame>(*c, networkMessage).ok()) {
-                    really_close(*c);
-                    *c = -1;
+            if (!c->is_disconnected()) {
+                if (!recv_msg<&NetworkMessage::has_frame>(c->clientSocket, networkMessage).ok()) {
+                    c->disconnect();
                 }
             }
         }
         for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
-            if (*c != -1) {
+            if (c->is_disconnected()) {
                 networkMessage.Clear();
                 Frame *frame = networkMessage.mutable_frame();
                 populate_server_frame(frame);
-                if (!send_msg(*c, networkMessage).ok()) { // Frame
-                    really_close(*c);
-                    *c = -1;
+                if (!send_msg(c->clientSocket, networkMessage).ok()) { // Frame
+                    c->disconnect();
                 }
             }
         }
         while (!server->clients.empty()) {
-            if (server->clients.back() == -1)  {
+            if (server->clients.back().is_disconnected())  {
                 server->clients.pop_back();
             } else {
                 break;
@@ -413,17 +428,20 @@ void process_network() {
                 break;
             }
             bool found = false;
+            RemoteClient cl;
+            cl.clientSocket = s;
+            cl.callsign = "UNKNOWN";
             for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
-                if (*c == -1) {
-                    *c  = s;
+                if (c->is_disconnected()) {
+                    *c = cl;
                     found = true;
                 }
             }
             if (!found) {
-                server->clients.push_back(s);
+                server->clients.push_back(cl);
             }
         }
-    } else {
+    } else if (client) {
         networkMessage.Clear();
         Frame *frame = networkMessage.mutable_frame();
         populate_client_frame(frame);
