@@ -247,12 +247,36 @@ struct RecvStatus {
         return _ok;
     }
 };
-
+const char * message_type(const NetworkMessage &msg) {
+    const char *type = NULL;
+    if (msg.has_connect()) {
+        type = type ? "multi" : "connect";
+    }
+    if (msg.has_game()) {
+        type = type ? "multi" : "game";
+    }
+    if (msg.has_frame()) {
+        type = type ? "multi" : "frame";
+    }
+    type = type ? type : "none";
+    return type;
+}
 template<bool (NetworkMessage::*Checker)() const>
 RecvStatus recv_msg(int sock, NetworkMessage &msg) {
     NetworkMessage networkMessage;
     unsigned char lengthData[3];
     ssize_t ret;
+    const char * func_type = 
+#if defined(__GNUC__)
+                __PRETTY_FUNCTION__
+#elif defined(_MSC_VER)
+                __FUNCSIG__
+#else
+                "unknown"
+#endif
+        ;
+    fprintf(stderr, "Begin Receive %s\n",
+                func_type);
     if ((ret = send_or_recv_all(RecvFunctor(sock), lengthData, sizeof(lengthData))) < sizeof(lengthData)) {
         // We need to handle disconnects here.
         if (ret < 0) {
@@ -285,28 +309,16 @@ RecvStatus recv_msg(int sock, NetworkMessage &msg) {
         return RecvStatus::FAIL();
     }
     if (!(msg.*Checker)()) {
-        const char *type = NULL;
-        if (msg.has_connect()) {
-            type = type ? "multi" : "connect";
-        }
-        if (msg.has_game()) {
-            type = type ? "multi" : "game";
-        }
-        if (msg.has_frame()) {
-            type = type ? "multi" : "frame";
-        }
-        type = type ? type : "none";
         fprintf(stderr, "type mismatch want %s have %s\n",
-#if defined(__GNUC__)
-                __PRETTY_FUNCTION__
-#elif defined(_MSC_VER)
-                __FUNCSIG__
-#else
-                "unknown"
-#endif
-                , type);
+                func_type,
+                message_type(msg));
+
         return RecvStatus::FAIL();
     }
+    fprintf(stderr, "Finished message %s have %s len %d\n",
+            func_type,
+            message_type(msg),
+            (int)recvData.size() + 3);
 
     return RecvStatus::OK();
 }
@@ -330,12 +342,13 @@ RecvStatus send_msg(int sock, const NetworkMessage &msg) {
     toSend[0] = (char)(dataLength >> 16);
     toSend[1] = (char)(dataLength >> 8);
     toSend[2] = (char)(dataLength);
-    fprintf(stderr, "start send %d\n", dataLength);
+    fprintf(stderr, "start send %s: %d\n", message_type(msg), (int)dataLength);
     if (send_or_recv_all(SendFunctor(sock), toSend.data(), toSend.length()) < 0) {
         // We need to handle disconnects here.
         perror("send failed");
         return RecvStatus::FAIL();
     }
+    fprintf(stderr, "send ok %d\n", (int)dataLength);
     return RecvStatus::OK();
 }
 
@@ -435,6 +448,7 @@ void process_network() {
                 if (c->is_disconnected()) {
                     *c = cl;
                     found = true;
+                    break;
                 }
             }
             if (!found) {
