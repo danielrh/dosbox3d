@@ -64,3 +64,9 @@ message Game {
     optional uint32 assigned_player_id = 2;
     optional Frame starting_state = 3;
 }
+
+message NetworkMessage {
+    optional Connect connect = 1;
+    optional Game game = 2;
+    optional Frame frame = 3;
+}

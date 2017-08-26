@@ -14,7 +14,18 @@
 #include "paging.h"
 #include <vector>
 #include "wc_net.h"
+#include "../wc.pb.h"
 NetConfig net_config;
+
+NetConfig::NetConfig() {
+    host = getenv("WCHOST");
+    portstr = getenv("WCPORT");
+    port = portstr ? (uint16_t)atoi(portstr) : 0;
+    if (port < 1024) {
+        fprintf(stderr, "You must set the WCPORT and (optionally) WCHOST env variables!\n");
+        abort();
+    }
+}
 
 int really_close(int s) {
     int retval = -1;
@@ -22,11 +33,18 @@ int really_close(int s) {
     return retval;
 }
 
-ptrdiff_t read_all(int s, void *vbuffer, size_t size) {
-    unsigned char* buffer = (unsigned char *) vbuffer;
+// SendOrRecvFunction(void*, size_t) -> ssize_t
+template <class BufferType, class SendOrRecvFunction>
+ptrdiff_t send_or_recv_all(const SendOrRecvFunction &sorf, BufferType *buffer, size_t size) {
+    if (size == 0) {
+        fprintf(stderr, "Warning: ask to send or recv of size 0\n");
+    }
+    const BufferType* constbuffer = const_cast<const BufferType *>(buffer);
+    static_assert(sizeof(*buffer)==1, "buffer must be possibly const char*");
+
     size_t read_so_far = 0;
     while (size) {
-        ptrdiff_t cur = read(s, buffer, size);
+        ptrdiff_t cur = sorf(buffer, size);
         if (cur < 0) {
             if (errno == EINTR) {
                 continue;
@@ -42,6 +60,39 @@ ptrdiff_t read_all(int s, void *vbuffer, size_t size) {
     }
     return read_so_far;
 }
+
+class SendFunctor {
+    int mSocket;
+public:
+    SendFunctor(int socket) : mSocket(socket) {
+    }
+
+    ssize_t operator() (const void* data, size_t len) const {
+        return ::send(mSocket, data, len, 0);
+    }
+};
+
+class RecvFunctor {
+    int mSocket;
+public:
+    RecvFunctor(int socket) : mSocket(socket) {
+    }
+
+    ssize_t operator() (void* data, size_t len) const {
+        return ::recv(mSocket, data, len, 0);
+    }
+};
+
+class ReadFunctor {
+    int mFd;
+public:
+    ReadFunctor(int fd) : mFd(fd) {
+    }
+
+    ssize_t operator() (void* data, size_t len) const {
+        return ::read(mFd, data, len);
+    }
+};
 
 struct ServerState {
 	int listenSocket;
@@ -149,7 +200,8 @@ void init_network() {
         break;  /* okay we got one */
     }
     if (s < 0) {
-            fprintf(stderr, "socket/connect %s\n", cause);
+            fprintf(stderr, "socket error during ");
+            perror(cause);
             abort();
     }
     freeaddrinfo(res0);
@@ -180,20 +232,89 @@ struct RecvStatus {
     }
 };
 
-
-RecvStatus recv_msg(int sock) {
-    char data[1];
-    if (recv(sock, data, 1, 0) <= 0) {
+template<bool (NetworkMessage::*Checker)() const>
+RecvStatus recv_msg(int sock, NetworkMessage &msg) {
+    NetworkMessage networkMessage;
+    unsigned char lengthData[3];
+    ssize_t ret;
+    if ((ret = send_or_recv_all(RecvFunctor(sock), lengthData, sizeof(lengthData))) < sizeof(lengthData)) {
         // We need to handle disconnects here.
-        perror("recv failed");
+        if (ret < 0) {
+            perror("recv length failed");
+        } else {
+            fprintf(stderr, "recv length socket closed %d\n", (int)ret);
+        }
         return RecvStatus::FAIL();
     }
-    printf("got %c\n", data[0]);
+    size_t dataLength = ((size_t)lengthData[0] << 16) |
+        ((size_t)lengthData[1] << 8) |
+        ((size_t)lengthData[2]);
+    if (dataLength == 0) {
+        fprintf(stderr, "empty message received!\n");
+        return RecvStatus::FAIL();
+    }
+    std::vector<unsigned char> recvData(dataLength);
+    if ((ret = send_or_recv_all(RecvFunctor(sock), recvData.data(), recvData.size())) < recvData.size()) {
+        // We need to handle disconnects here.
+        if (ret < 0) {
+            perror("recv data failed");
+        } else {
+            fprintf(stderr, "recv data socket closed %d\n", (int)ret);
+        }
+        return RecvStatus::FAIL();
+    }
+    bool success = msg.ParseFromArray(recvData.data(), recvData.size());
+    if (!success) {
+        fprintf(stderr, "protobuf parse failed\n");
+        return RecvStatus::FAIL();
+    }
+    if (!(msg.*Checker)()) {
+        const char *type = NULL;
+        if (msg.has_connect()) {
+            type = type ? "multi" : "connect";
+        }
+        if (msg.has_game()) {
+            type = type ? "multi" : "game";
+        }
+        if (msg.has_frame()) {
+            type = type ? "multi" : "frame";
+        }
+        type = type ? type : "none";
+        fprintf(stderr, "type mismatch want %s have %s\n",
+#if defined(__GNUC__)
+                __PRETTY_FUNCTION__
+#elif defined(_MSC_VER)
+                __FUNCSIG__
+#else
+                "unknown"
+#endif
+                , type);
+        return RecvStatus::FAIL();
+    }
+
     return RecvStatus::OK();
 }
 
-RecvStatus send_msg(int sock, const char *data) {
-    if (send(sock, data, 1, 0) < 0) {
+RecvStatus send_msg(int sock, const NetworkMessage &msg) {
+    std::string toSend = "XXX";
+    bool success = msg.AppendToString(&toSend); // encode protobuf
+    if (!success) {
+        fprintf(stderr, "serialize failed\n");
+        abort();
+    }
+    size_t dataLength = toSend.length() - 3;
+    if (dataLength >= (1L<<24)) {
+        fprintf(stderr, "protobuf output too large\n");
+        abort();
+    }
+    if (dataLength == 0) {
+        fprintf(stderr, "protobuf output too small %d\n", (int)dataLength);
+        abort();
+    }
+    toSend[0] = (char)(dataLength >> 16);
+    toSend[1] = (char)(dataLength >> 8);
+    toSend[2] = (char)(dataLength);
+    if (send_or_recv_all(SendFunctor(sock), toSend.data(), toSend.length()) < 0) {
         // We need to handle disconnects here.
         perror("send failed");
         return RecvStatus::FAIL();
@@ -201,17 +322,36 @@ RecvStatus send_msg(int sock, const char *data) {
     return RecvStatus::OK();
 }
 
+void populate_server_frame(Frame *frame) {
+}
+
+void populate_client_frame(Frame *frame) {
+}
+
+void apply_frame(const Frame &frame) {
+}
+
 void process_network() {
+    static NetworkMessage networkMessage;
+    networkMessage.Clear();
     if (!client && !server) {
         init_network();
         if (client) {
-            if (!send_msg(client->clientSocket, "b").ok()) {
+            networkMessage.Clear();
+            Connect *connect = networkMessage.mutable_connect();
+            connect->set_callsign("Maniac");
+            if (!send_msg(client->clientSocket, networkMessage).ok()) {
                 uninit_network();
                 return;
             }
-            if (!recv_msg(client->clientSocket).ok()) {
+            networkMessage.Clear();
+            if (!recv_msg<&NetworkMessage::has_game>(client->clientSocket, networkMessage).ok()) {
                 uninit_network();
                 return;
+            }
+            const Game &game = networkMessage.game();
+            if (game.has_starting_state()) {
+                apply_frame(game.starting_state());
             }
         }
     }
@@ -219,7 +359,7 @@ void process_network() {
     if (server) {
         for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
             if (*c != -1) {
-                if (!recv_msg(*c).ok()) {
+                if (!recv_msg<&NetworkMessage::has_frame>(*c, networkMessage).ok()) {
                     really_close(*c);
                     *c = -1;
                 }
@@ -227,7 +367,10 @@ void process_network() {
         }
         for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
             if (*c != -1) {
-                if (!send_msg(*c, "s").ok()) { // Frame
+                networkMessage.Clear();
+                Frame *frame = networkMessage.mutable_frame();
+                populate_server_frame(frame);
+                if (!send_msg(*c, networkMessage).ok()) { // Frame
                     really_close(*c);
                     *c = -1;
                 }
@@ -255,6 +398,20 @@ void process_network() {
             }
             flags = fcntl(server->listenSocket, F_GETFL, 0);
             fcntl(server->listenSocket, F_SETFL, flags & ~O_NONBLOCK);
+            if (!recv_msg<&NetworkMessage::has_connect>(s, networkMessage).ok()) {
+                really_close(s);
+                break;
+            }
+            const Connect &connect = networkMessage.connect();
+            fprintf(stderr, "Some guy connected: %s\n", connect.callsign().c_str());
+            networkMessage.Clear();
+            Game * game = networkMessage.mutable_game();
+            Frame * frame = game->mutable_starting_state();
+            populate_server_frame(frame);
+            if (!send_msg(s, networkMessage).ok()) {
+                really_close(s);
+                break;
+            }
             bool found = false;
             for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
                 if (*c == -1) {
@@ -265,14 +422,18 @@ void process_network() {
             if (!found) {
                 server->clients.push_back(s);
             }
-            recv_msg(s); // Connect
-            send_msg(s, "g"); // GameState
         }
     } else {
-        if (!send_msg(client->clientSocket, "c").ok()) {
-            uninit_network();            
-        } else if (!recv_msg(client->clientSocket).ok()) { // Frame
+        networkMessage.Clear();
+        Frame *frame = networkMessage.mutable_frame();
+        populate_client_frame(frame);
+        if (!send_msg(client->clientSocket, networkMessage).ok()) {
             uninit_network();
+            return;
+        }
+        if (!recv_msg<&NetworkMessage::has_frame>(client->clientSocket, networkMessage).ok()) { // Frame
+            uninit_network();
+            return;
         }
     }
 
@@ -400,7 +561,7 @@ void process_network() {
                 }
             } else if (buf[0] == 'f') { // fire one gun from a selected ship
                 buf[0] = 0;
-                read_all(fire_fifo, &buf, 1);
+                send_or_recv_all(ReadFunctor(fire_fifo), &buf, 1);
                 uint32_t gun_id = 0;
                 uint32_t ship_id = 0;
                 if (buf[0] >= '0' && buf[0] <= '9') {
@@ -429,7 +590,7 @@ void process_network() {
                 };
                 for (int i = 0; i < sizeof(shellcode); i++) {
                     mem_writeb_checked(data_segment_start + loading_wing_commander_start + i, shellcode[i]);
-                }                
+                }
             } else if (buf[0] == 'd') {
                 unsigned short arg_0, arg_2, arg_4, arg_6;
                 char argbuf[100] = {0};

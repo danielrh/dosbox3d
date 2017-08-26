@@ -36,6 +36,6 @@ endif
 endif
 
 # https://stackoverflow.com/questions/1779984/header-dependency-in-automake
-BUILT_SOURCES=version.stamp
+BUILT_SOURCES=version.stamp wc.pb.h
 version.stamp:
 	python version.py ../include/version.h .. $(CXX)
