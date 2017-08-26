@@ -58,6 +58,7 @@
 
 #define MAPPERFILE "mapper-" VERSION ".map"
 //#define DISABLE_JOYSTICK
+//#define DISABLE_MOUSE
 
 #if C_OPENGL
 #include "SDL_opengl.h"
@@ -1150,6 +1151,9 @@ static bool use_capture_callback = false;
 static void doGFX_CaptureMouse(void);
 
 void GFX_CaptureMouse(void) {
+#ifdef DISABLE_MOUSE
+    return;
+#endif
 	if (use_capture_callback) {
 		if (sdl.mouse.locked) {
 			emscripten_exit_pointerlock();
@@ -1168,6 +1172,9 @@ static void doGFX_CaptureMouse(void)
 void GFX_CaptureMouse(void)
 #endif
 {
+#ifdef DISABLE_MOUSE
+    return;
+#endif
 	sdl.mouse.locked=!sdl.mouse.locked;
 	if (sdl.mouse.locked) {
 #if SDL_VERSION_ATLEAST(2,0,0)
@@ -1188,6 +1195,8 @@ void GFX_CaptureMouse(void)
 }
 
 void GFX_UpdateSDLCaptureState(void) {
+#ifndef DISABLE_MOUSE
+
 	if (sdl.mouse.locked) {
 #if SDL_VERSION_ATLEAST(2,0,0)
 		SDL_SetRelativeMouseMode(SDL_TRUE);
@@ -1203,6 +1212,7 @@ void GFX_UpdateSDLCaptureState(void) {
 #endif
 		if (sdl.mouse.autoenable || !sdl.mouse.autolock) SDL_ShowCursor(SDL_ENABLE);
 	}
+#endif
 	CPU_Reset_AutoAdjust();
 	GFX_SetTitle(-1,-1,false);
 }
@@ -2096,6 +2106,9 @@ static void GUI_StartUp(Section * sec) {
 }
 
 void Mouse_AutoLock(bool enable) {
+#ifdef DISABLE_MOUSE
+    return;
+#endif
 	sdl.mouse.autolock=enable;
 	if (sdl.mouse.autoenable) sdl.mouse.requestlock=enable;
 	else {
@@ -2105,6 +2118,9 @@ void Mouse_AutoLock(bool enable) {
 }
 
 static void HandleMouseMotion(SDL_MouseMotionEvent * motion) {
+#ifdef DISABLE_MOUSE
+    return;
+#endif
 	if (sdl.mouse.locked || !sdl.mouse.autoenable)
 		Mouse_CursorMoved((float)motion->xrel*sdl.mouse.sensitivity/100.0f,
 						  (float)motion->yrel*sdl.mouse.sensitivity/100.0f,
@@ -2114,6 +2130,9 @@ static void HandleMouseMotion(SDL_MouseMotionEvent * motion) {
 }
 
 static void HandleMouseButton(SDL_MouseButtonEvent * button) {
+#ifdef DISABLE_MOUSE
+    return;
+#endif
 	switch (button->state) {
 	case SDL_PRESSED:
 		if (sdl.mouse.requestlock && !sdl.mouse.locked) {
@@ -2986,12 +3005,14 @@ int main(int argc, char* argv[]) {
 	sticky_keys(true); //Might not be needed if the shutdown function switches to windowed mode, but it doesn't hurt
 #endif 
 	//Force visible mouse to end user. Somehow this sometimes doesn't happen
+#ifndef DISABLE_MOUSE
 #if SDL_VERSION_ATLEAST(2,0,0)
 	SDL_SetRelativeMouseMode(SDL_FALSE);
 #else
 	SDL_WM_GrabInput(SDL_GRAB_OFF);
 #endif
 	SDL_ShowCursor(SDL_ENABLE);
+#endif
 
 	SDL_Quit();//Let's hope sdl will quit as well when it catches an exception
 	return 0;
