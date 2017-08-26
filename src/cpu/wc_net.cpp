@@ -395,7 +395,7 @@ void process_network() {
             }
         }
         for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
-            if (c->is_disconnected()) {
+            if (!c->is_disconnected()) {
                 networkMessage.Clear();
                 Frame *frame = networkMessage.mutable_frame();
                 populate_server_frame(frame);
