@@ -625,6 +625,14 @@ AS_IF([test "x$with_protobuf" = "xyes"],
    CXXFLAGS="$CXXFLAGS -I$with_protobuf/include"
 ])
 
+
+AC_ARG_ENABLE(nomouse,AC_HELP_STRING([--enable-nomouse],[Enables not supporting mouse]),[
+  if test x$enable_nomouse = xyes ; then 
+    AC_MSG_RESULT([Disabling mouse support.])
+    AC_DEFINE(DISABLE_MOUSE,1)
+  fi
+],)
+
 AC_ARG_WITH([protoc],
     [AS_HELP_STRING([--with-protoc=/path/of/protoc],
        [Location of the protocol buffers compiler protoc. Defaults to looking on path.])],
