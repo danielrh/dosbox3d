@@ -233,6 +233,13 @@ void process_network() {
                 }
             }
         }
+        while (!server->clients.empty()) {
+            if (server->clients.back() == -1)  {
+                server->clients.pop_back();
+            } else {
+                break;
+            }
+        }
         while (true) {
             int flags = fcntl(server->listenSocket, F_GETFL, 0);
             if (server->clients.empty()) {
@@ -248,7 +255,16 @@ void process_network() {
             }
             flags = fcntl(server->listenSocket, F_GETFL, 0);
             fcntl(server->listenSocket, F_SETFL, flags & ~O_NONBLOCK);
-            server->clients.push_back(s);
+            bool found = false;
+            for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
+                if (*c == -1) {
+                    *c  = s;
+                    found = true;
+                }
+            }
+            if (!found) {
+                server->clients.push_back(s);
+            }
             recv_msg(s); // Connect
             send_msg(s, "g"); // GameState
         }
