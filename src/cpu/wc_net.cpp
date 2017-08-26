@@ -7,6 +7,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <netdb.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <errno.h>
 #include "cpu.h"
@@ -15,14 +16,62 @@
 #include "wc_net.h"
 NetConfig net_config;
 
+int really_close(int s) {
+    int retval = -1;
+    while ((retval = close(s)) == -1 && errno == EINTR) {}
+    return retval;
+}
+
+ptrdiff_t read_all(int s, void *vbuffer, size_t size) {
+    unsigned char* buffer = (unsigned char *) vbuffer;
+    size_t read_so_far = 0;
+    while (size) {
+        ptrdiff_t cur = read(s, buffer, size);
+        if (cur < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return cur;
+        } else if (cur == 0) {
+            return read_so_far;
+        } else {
+            read_so_far += cur;
+            buffer += cur;
+            size -= cur;
+        }
+    }
+    return read_so_far;
+}
+
 struct ServerState {
 	int listenSocket;
     typedef std::vector<int> ClientVec;
 	ClientVec clients;
+    ServerState() {
+        listenSocket = -1;
+    }
+    ~ServerState() {
+        if (listenSocket != -1) {
+            really_close(listenSocket);
+        }
+        for (ServerState::ClientVec::iterator c = clients.begin(), ce=clients.end(); c != ce; ++c) {
+            if (*c != -1) {
+                really_close(*c);
+            }
+        }
+    }
 } *server;
 
 struct ClientState {
 	int clientSocket;
+    ClientState() {
+        clientSocket = -1;
+    }
+    ~ClientState() {
+        if (clientSocket != -1) {
+            really_close(clientSocket);
+        }
+    }
 } *client;
 
 int manualDoDamage = 0;
@@ -34,7 +83,16 @@ int fire_fifo = open("/tmp/fire.fifo", O_RDONLY|O_NONBLOCK);
 FILE *memlog = fopen("/tmp/mem.txt", "a");
 FILE *debuglog = fopen("/tmp/debug.txt", "a");
 
-
+void uninit_network() {
+    if (server) {
+        delete server;
+        server = NULL;
+    }
+    if (client) {
+        delete client;
+        client = NULL;
+    }
+}
 
 void init_network() {
     struct addrinfo hints, *res, *res0;
@@ -105,39 +163,75 @@ void init_network() {
 
 //GameState gs;
 
-void recv_msg(int sock) {
+struct RecvStatus {
+    bool _ok;
+    static RecvStatus OK() {
+        RecvStatus ret;
+        ret._ok = true;
+        return ret;
+    }
+    static RecvStatus FAIL() {
+        RecvStatus ret;
+        ret._ok = false;
+        return ret;
+    }
+    bool ok() const {
+        return _ok;
+    }
+};
+
+
+RecvStatus recv_msg(int sock) {
     char data[1];
     if (recv(sock, data, 1, 0) <= 0) {
         // We need to handle disconnects here.
         perror("recv failed");
-        abort();
+        return RecvStatus::FAIL();
     }
     printf("got %c\n", data[0]);
+    return RecvStatus::OK();
 }
 
-void send_msg(int sock, const char *data) {
+RecvStatus send_msg(int sock, const char *data) {
     if (send(sock, data, 1, 0) < 0) {
         // We need to handle disconnects here.
         perror("send failed");
-        abort();
+        return RecvStatus::FAIL();
     }
+    return RecvStatus::OK();
 }
 
 void process_network() {
     if (!client && !server) {
         init_network();
         if (client) {
-            send_msg(client->clientSocket, "b"); // Connect
-            recv_msg(client->clientSocket); // GameState
+            if (!send_msg(client->clientSocket, "b").ok()) {
+                uninit_network();
+                return;
+            }
+            if (!recv_msg(client->clientSocket).ok()) {
+                uninit_network();
+                return;
+            }
         }
     }
 
     if (server) {
         for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
-            recv_msg(*c); // Frame
+            if (*c != -1) {
+                if (!recv_msg(*c).ok()) {
+                    really_close(*c);
+                    *c = -1;
+                }
+            }
         }
         for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
-            send_msg(*c, "s"); // Frame
+            if (*c != -1) {
+                if (!send_msg(*c, "s").ok()) { // Frame
+                    really_close(*c);
+                    *c = -1;
+                }
+            }
         }
         while (true) {
             int flags = fcntl(server->listenSocket, F_GETFL, 0);
@@ -159,8 +253,11 @@ void process_network() {
             send_msg(s, "g"); // GameState
         }
     } else {
-        send_msg(client->clientSocket, "c"); // Frame
-        recv_msg(client->clientSocket); // Frame
+        if (!send_msg(client->clientSocket, "c").ok()) {
+            uninit_network();            
+        } else if (!recv_msg(client->clientSocket).ok()) { // Frame
+            uninit_network();
+        }
     }
 
 
@@ -287,7 +384,7 @@ void process_network() {
                 }
             } else if (buf[0] == 'f') { // fire one gun from a selected ship
                 buf[0] = 0;
-                read(fire_fifo, &buf, 1);
+                read_all(fire_fifo, &buf, 1);
                 uint32_t gun_id = 0;
                 uint32_t ship_id = 0;
                 if (buf[0] >= '0' && buf[0] <= '9') {
