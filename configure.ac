@@ -610,11 +610,20 @@ AS_IF([test "x$enable_emscripten" = "xyes"],[
 ])
 
 
-PKG_CHECK_MODULES(PROTOBUF, protobuf >= 2.4.0)
 AC_SUBST(PROTOBUF_LIBS)
 AC_SUBST(PROTOBUF_CFLAGS)
 AC_SUBST(PROTOBUF_VERSION)
 
+AC_ARG_WITH(protobuf, [AC_HELP_STRING([--with-protobuf=no/PATH],
+                  [Use this to provide a path to a custom protobuf build.])],
+                  [], [with_protobuf=yes])
+# [PKG_CHECK_MODULES(PROTOBUF, protobuf >= 2.4.0)],
+AS_IF([test "x$with_protobuf" = "xyes"],
+  [LIBS="$LIBS `pkg-config --libs protobuf`"
+   CXXFLAGS="$CXXFLAGS `pkg-config --cflags protobuf`"],
+  [LIBS="$LIBS -L$with_protobuf/lib -lprotobuf"
+   CXXFLAGS="$CXXFLAGS -I$with_protobuf/include"
+])
 
 AC_ARG_WITH([protoc],
     [AS_HELP_STRING([--with-protoc=/path/of/protoc],
