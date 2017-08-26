@@ -625,7 +625,7 @@ AS_IF([test "x$with_protobuf" = "xyes"],
    CXXFLAGS="$CXXFLAGS -I$with_protobuf/include"
 ])
 
-
+AH_TEMPLATE(DISABLE_MOUSE,[Define to 1 to disable the mouse])
 AC_ARG_ENABLE(nomouse,AC_HELP_STRING([--enable-nomouse],[Enables not supporting mouse]),[
   if test x$enable_nomouse = xyes ; then 
     AC_MSG_RESULT([Disabling mouse support.])
