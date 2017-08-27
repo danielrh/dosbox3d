@@ -1,24 +1,32 @@
 syntax = "proto2";
-message Damage {
-        optional sfixed32 xcoord = 1;
-        optional sfixed32 ycoord = 2;
-        optional sfixed32 zcoord = 3;
-        optional uint32 src = 4; // 16 bits
-        optional uint32 quantity = 5; // 16 its
-        optional uint32 arg6 = 6; // 16 bits
-        optional fixed32 seed = 7;
+
+// Position vectors optimized for values not close to 0
+message FixedVector {
+        required sfixed32 x = 1;
+        required sfixed32 y = 2;
+        required sfixed32 z = 3;
 }
 
-message Position {
-        optional sfixed32 xcoord = 1;
-        optional sfixed32 ycoord = 2;
-        optional sfixed32 zcoord = 3;
-        optional sint32 vx = 4; // 16 bits
-        optional sint32 vy = 5; // 16 bits
-        optional sint32 vz = 6; // 16 bits
-        optional sint32 fore = 7; // 16 bits
-        optional sint32 up = 8; // 16 bits
-        optional sint32 right = 9; // 16 bits
+// Wing commander stored orientations as 32-bit from -256 to 256 inclusive
+message Vector {
+        required sint32 x = 1;
+        required sint32 y = 2;
+        required sint32 z = 3;
+}
+
+message Location {
+        optional FixedVector pos = 1;
+        optional Vector vel = 2;
+        optional Vector right = 3;
+        optional Vector up = 4;
+        optional Vector fore = 5;
+}
+
+message Damage {
+        optional Vector pos = 1;
+        optional uint32 src = 2; // 16 bits
+        optional uint32 quantity = 3; // 16 its
+        optional fixed32 seed = 5;
 }
 
 message WeaponFire {
@@ -27,7 +35,7 @@ message WeaponFire {
 
 message ShipUpdate {
         optional uint32 ship_id = 1; // 16 bits
-        optional Position pos = 2;
+        optional Location loc = 2;
         repeated Damage damage = 3;
         repeated WeaponFire fire = 4;
 
@@ -47,11 +55,10 @@ enum AutoPilotState {
 }
 
 message Frame {
-    optional uint32 player_id = 1;
-    repeated ShipUpdate update = 2; // one update per updated ship
-    repeated string chat = 3;
-    optional AutoPilotState autopiloting = 14;
-    optional GameState game_update = 15;
+    repeated ShipUpdate update = 1; // one update per updated ship
+    repeated string chat = 2;
+    optional AutoPilotState autopiloting = 16;
+    optional GameState game_update = 17;
 }
 
 // Connect -> once per mission
@@ -61,7 +68,7 @@ message Connect {
 
 message Game {
     optional uint32 mission_id = 1;
-    optional uint32 assigned_player_id = 2;
+    required uint32 assigned_player_id = 2;
     optional Frame starting_state = 3;
 }
 

@@ -95,10 +95,12 @@ public:
 };
 
 struct RemoteClient {
+    NetworkShipId id;
     int clientSocket;
     std::string callsign;
-    RemoteClient() {
-        clientSocket = -1;
+    RemoteClient(NetworkShipId id)
+      : clientSocket(-1),
+        id(id) {
     }
     bool is_disconnected() const {
         return clientSocket == -1;
@@ -114,9 +116,38 @@ struct ServerState {
 	int listenSocket;
     typedef std::vector<RemoteClient> ClientVec;
 	ClientVec clients;
+    std::vector<NetworkShipId> allowedShipIds;
+
     ServerState() {
         listenSocket = -1;
+        allowedShipIds.push_back(NetworkShipId::from_net(1));
+        allowedShipIds.push_back(NetworkShipId::from_net(3));
     }
+
+    RemoteClient *get_client(NetworkShipId id) {
+        int ship_id = id.to_net();
+        if (ship_id >= clients.size()) {
+            return NULL;
+        }
+        if (!clients[ship_id].is_disconnected()) {
+            return &clients[ship_id];
+        }
+        return NULL;
+    }
+
+    RemoteClient *create_client() {
+        for (std::vector<NetworkShipId>::const_iterator it = allowedShipIds.begin(), ite = allowedShipIds.end(); it != ite; ++it) {
+            int ship_id = it->to_net();
+            while (ship_id >= clients.size()) {
+                clients.push_back(RemoteClient(NetworkShipId::from_net(clients.size())));
+            }
+            if (clients[ship_id].is_disconnected()) {
+                return &clients[ship_id];
+            }
+        }
+        return NULL;
+    }
+
     ~ServerState() {
         if (listenSocket != -1) {
             really_close(listenSocket);
@@ -129,26 +160,109 @@ struct ServerState {
 
 struct ClientState {
 	int clientSocket;
-    ClientState() {
-        clientSocket = -1;
+    NetworkShipId shipId;
+    std::string callsign;
+    ClientState()
+      : clientSocket(-1),
+        shipId(NetworkShipId::from_net(0))
+    {
+        const char *cs = getenv("WCCALLSIGN");
+        if (cs) {
+            callsign = cs;
+        }
+        if (callsign.empty()) {
+            callsign = "Maniac";
+        }
     }
     ~ClientState() {
         if (clientSocket != -1) {
             really_close(clientSocket);
         }
     }
+    bool is_authoritative(NetworkShipId id) {
+        if (id == this->shipId) {
+            return true;
+        }
+        return false;
+    }
 } *client;
 
+struct PendingState {
+    NetworkMessage frameMessage;
+
+    Frame &frame () {
+        return *frameMessage.mutable_frame();
+    }
+
+} pendingState;
+
+ShipUpdate &get_update(Frame &fr, NetworkShipId id) {
+    int ship_id = id.to_net();
+    while (ship_id >= fr.update_size()) {
+        fr.add_update();
+    }
+
+    ShipUpdate *ret = fr.mutable_update(ship_id);
+    ret->set_ship_id(ship_id);
+    return *ret;
+}
+
+int NetworkShipId::remap_ship_id(int ship_id) {
+    if (!client) {
+        return ship_id; // server does not remap.
+    }
+    if (ship_id == 0) {
+        return client->shipId.to_net();
+    }
+    if (ship_id == client->shipId.to_net()) {
+        return 0;
+    }
+    return ship_id;
+}
+
+bool should_simulate_damage(NetworkShipId src, NetworkShipId dst) {
+    if (client) {
+        return false; //return (src_ship_id == 0 || dst_ship_id == 0);
+    }
+    if (server) {
+        return true;
+        /*
+        if (server->get_client(src_ship_id) || server->get_client(dst_ship_id)) {
+        }
+        for (size_t i = 0; i < server->clients.size(); i++) {
+            if (
+        }
+        return (src_ship_id
+        */
+    }
+    fprintf(stderr, "Not client or server\n");
+    return false;
+}
+
+bool should_simulate_fire(NetworkShipId src) {
+    if (client) {
+        return src == client->shipId;
+    }
+    if (server) {
+        return server->get_client(src) == NULL;
+    }
+    fprintf(stderr, "Not client or server\n");
+    return false;
+}
+
+bool is_client_authoritative(NetworkShipId sender, NetworkShipId id) {
+    return sender == id;
+}
+
 int manualDoDamage = 0;
-
-
-
+int manualDoFire = 0;
 
 int fire_fifo = open("/tmp/fire.fifo", O_RDONLY|O_NONBLOCK);
 FILE *memlog = fopen("/tmp/mem.txt", "a");
 FILE *debuglog = fopen("/tmp/debug.txt", "a");
 
 void uninit_network() {
+    pendingState.frameMessage.Clear();
     if (server) {
         delete server;
         server = NULL;
@@ -231,22 +345,6 @@ void init_network() {
 
 //GameState gs;
 
-struct RecvStatus {
-    bool _ok;
-    static RecvStatus OK() {
-        RecvStatus ret;
-        ret._ok = true;
-        return ret;
-    }
-    static RecvStatus FAIL() {
-        RecvStatus ret;
-        ret._ok = false;
-        return ret;
-    }
-    bool ok() const {
-        return _ok;
-    }
-};
 const char * message_type(const NetworkMessage &msg) {
     const char *type = NULL;
     if (msg.has_connect()) {
@@ -352,13 +450,244 @@ RecvStatus send_msg(int sock, const NetworkMessage &msg) {
     return RecvStatus::OK();
 }
 
+const int DS = 0x13d3;
+const int DS_OFF = DS * 0x10;
+enum DataSegValues {
+    DS_Pos = 0xA9C2,
+    DS_Vel = 0xCAE2,
+    DS_Right = 0xAEB6,
+    DS_Up = 0xB1B6,
+    DS_Forward = 0xB4B6,
+    DS_RandomSeed = 0x7728,
+    DS_loading_wing_commander = 0x0187,
+    shellcode_start = DS_loading_wing_commander,
+    DS_tmpvector = DS_Pos + (12 * 0x3f)
+};
+
+template <class VectorClass>
+void populate_vector(VectorClass *vec, int addr, NetworkShipId array_index) {
+    return populate_vector(vec, addr + 12 * array_index.to_local());
+}
+
+template <class VectorClass>
+void populate_vector(VectorClass *vec, int naddr) {
+    int faraddr = DS_OFF + naddr;
+    unsigned int valx;
+    unsigned int valy;
+    unsigned int valz;
+    mem_readd_checked(faraddr, &valx);
+    mem_readd_checked(faraddr + 0x4, &valy);
+    mem_readd_checked(faraddr + 0x8, &valz);
+    vec->set_x((int)valx);
+    vec->set_y((int)valy);
+    vec->set_z((int)valz);
+}
+
+template <class VectorClass>
+void store_vector(const VectorClass &vec, int addr, NetworkShipId array_index) {
+    return store_vector(vec, addr + 12 * array_index.to_local());
+}
+
+template <class VectorClass>
+void store_vector(const VectorClass &vec, int naddr) {
+    int faraddr = DS_OFF + naddr;
+    mem_writed(faraddr, vec.x());
+    mem_writed(faraddr + 0x4, vec.y());
+    mem_writed(faraddr + 0x8, vec.z());
+}
+
+void populate_ship_update(Frame *frame, NetworkShipId ship_id) {
+    ShipUpdate &su = get_update(*frame, ship_id);
+    su.set_ship_id(ship_id.to_net());
+    Location *loc = su.mutable_loc();
+    populate_vector(loc->mutable_pos(), DS_Pos, ship_id);
+    populate_vector(loc->mutable_vel(), DS_Vel, ship_id);
+    populate_vector(loc->mutable_right(), DS_Right, ship_id);
+    populate_vector(loc->mutable_up(), DS_Up, ship_id);
+    populate_vector(loc->mutable_fore(), DS_Forward, ship_id);
+}
+
 void populate_server_frame(Frame *frame) {
+    for (int i = 0; i < 0x3c; i++) {
+        populate_ship_update(frame, NetworkShipId::from_net(i));
+    }
 }
 
 void populate_client_frame(Frame *frame) {
+    populate_ship_update(frame, client->shipId);
+}
+
+void apply_ship_update_location(const ShipUpdate &su) {
+    if (!su.has_ship_id()) {
+        return;
+    }
+    NetworkShipId ship_id = NetworkShipId::from_net(su.ship_id());
+    if (!su.has_loc()) {
+        return;
+    }
+    const Location &loc = su.loc();
+    if (loc.has_pos()) {
+        store_vector(loc.pos(), DS_Pos, ship_id);
+    }
+    if (loc.has_vel()) {
+        store_vector(loc.vel(), DS_Vel, ship_id);
+    }
+    if (loc.has_right() && loc.has_up() && loc.has_fore()) {
+        store_vector(loc.right(), DS_Right, ship_id);
+        store_vector(loc.up(), DS_Up, ship_id);
+        store_vector(loc.fore(), DS_Forward, ship_id);
+    }
+}
+
+void apply_damage(const Damage &dam, NetworkShipId ship_id) {
+    int dam_src = -1;
+    if (dam.has_src()) {
+        dam_src = dam.src();
+    }
+    /*if (!should_simulate_damage(ship_id, dam_src)) {
+        return;
+    }*/
+    int src = -1;
+    if (dam.has_src()) {
+        src = NetworkShipId::from_net(dam.src()).to_local();
+    }
+    int dst = ship_id.to_local();
+    if (dam.has_pos()) {
+        store_vector(dam.pos(), DS_tmpvector);
+    } else {
+        Vector defaultPos;
+        defaultPos.set_x(0);
+        defaultPos.set_y(0);
+        defaultPos.set_z(256);
+        store_vector(defaultPos, DS_tmpvector);
+    }
+    {
+        unsigned short arg_0 = src, arg_2 = dst, arg_4 = dam.quantity(), arg_6 = DS_tmpvector;
+        Bit8u shellcode[] = {
+            0x00, // nul terminate string
+            // push flags,
+            0x9C, //PUSHF
+            //push all regs, xor si,si, push si
+            0x60, //PUSHA
+            0xbe, arg_6 & 0xff, arg_6 >> 8,
+            0x56, // push si
+            0xbe, arg_4 & 0xff, arg_4 >> 8,
+            0x56, // push si
+            0xbe, arg_2 & 0xff, arg_2 >> 8,
+            0x56, // push si
+            0xbe, arg_0 & 0xff, arg_0 >> 8,
+            0x56, // push si
+            // call far 12d7:012E
+            0x9A, 0x84, 0x00, 0xd7, 0x12,
+            // pop si, pop si, pop all regs, pop flags, retf
+            0x5E, 0x5E, 0x5E, 0x5E, 0x61, 0x9D, 0xCB
+        };
+        for (int i = 0; i < sizeof(shellcode); i++) {
+            mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
+        }
+        manualDoDamage ++;
+        SegSet16(cs, DS);
+        reg_eip = shellcode_start + 1;
+        fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
+    }
+}
+
+void apply_weapon_fire(const WeaponFire &fire, NetworkShipId id) {
+    /*if (!should_simulate_damage(ship_id, ship_id)) {
+        return;
+    }*/
+    uint32_t gun_id = 0;
+    if (fire.has_gun_id()) {
+        gun_id = fire.gun_id();
+    }
+    uint32_t ship_id = id.to_local();
+    {
+        Bit8u shellcode[] = {
+            0x00, // nul terminate string
+            // push flags,
+            0x9C, //PUSHF
+            //push all regs, xor si,si, push si
+            0x60, //PUSHA
+            0xbe, gun_id & 0xff, gun_id >> 8,// mov si <-- gun_id
+            0x56, // push si
+            0xbe, ship_id & 0xff, ship_id >> 8, // mov si <- ship_id
+            0x56, // push si
+            // call far 12d7:012E
+            0x9A, 0x2E, 0x01, 0xd7, 0x12,
+            // pop si, pop si, pop all regs, pop flags, retf
+            0x5E, 0x5E, 0x61, 0x9D, 0xCB
+        };
+        for (int i = 0; i < sizeof(shellcode); i++) {
+            mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
+        }
+        manualDoFire ++;
+        SegSet16(cs, DS);
+        reg_eip = shellcode_start + 1;
+        fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
+    }
+}
+
+void apply_ship_update_events(const ShipUpdate &su) {
+    if (!su.has_ship_id()) {
+        return;
+    }
+    NetworkShipId ship_id = NetworkShipId::from_net(su.ship_id());
+    for (int i = 0; i < su.damage_size(); i++) {
+        const Damage &dam = su.damage(i);
+        apply_damage(dam, ship_id);
+    }
+    for (int i = 0; i < su.fire_size(); i++) {
+        const WeaponFire &fire = su.fire(i);
+        apply_weapon_fire(fire, ship_id);
+    }
+}
+
+void merge_pending_frame(RemoteClient *sender, const Frame &frame) {
+    for (int i = 0; i < frame.update_size(); i++) {
+        const ShipUpdate &su = frame.update(i);
+        if (!su.has_ship_id()) {
+            continue;
+        }
+        NetworkShipId ship_id = NetworkShipId::from_net(su.ship_id());
+        ShipUpdate *update = &get_update(pendingState.frame(), ship_id);
+        if (sender && is_client_authoritative(sender->id, ship_id)) {
+            if (su.has_loc()) {
+                *update->mutable_loc() = su.loc();
+            }
+        }
+        for (int i = 0; i < su.damage_size(); i++) {
+            const Damage &dam = su.damage(i);
+            *update->add_damage() = dam;
+        }
+        for (int i = 0; i < su.fire_size(); i++) {
+            const WeaponFire &fire = su.fire(i);
+            *update->add_fire() = fire;
+        }
+    }
 }
 
 void apply_frame(const Frame &frame) {
+    for (int i = 0; i < frame.update_size(); i++) {
+        const ShipUpdate &su = frame.update(i);
+        if (!su.has_ship_id()) {
+            continue;
+        }
+        NetworkShipId ship_id = NetworkShipId::from_net(su.ship_id());
+        if ((client && client->is_authoritative(ship_id)) || (server && ship_id.to_local() != 0)) {
+            apply_ship_update_location(su);
+        }
+        apply_ship_update_events(su);
+    }
+}
+
+void apply_starting_frame(const Frame &frame) {
+    for (int i = 0; i < frame.update_size(); i++) {
+        const ShipUpdate &su = frame.update(i);
+        if (!su.has_ship_id()) {
+            continue;
+        }
+        apply_ship_update_location(su);
+    }
 }
 
 void process_network() {
@@ -369,7 +698,7 @@ void process_network() {
         if (client) {
             networkMessage.Clear();
             Connect *connect = networkMessage.mutable_connect();
-            connect->set_callsign("Maniac");
+            connect->set_callsign(client->callsign);
             if (!send_msg(client->clientSocket, networkMessage).ok()) {
                 uninit_network();
                 return;
@@ -381,29 +710,32 @@ void process_network() {
             }
             const Game &game = networkMessage.game();
             if (game.has_starting_state()) {
-                apply_frame(game.starting_state());
+                client->shipId = NetworkShipId::from_net(game.assigned_player_id());
+                apply_starting_frame(game.starting_state());
             }
         }
     }
 
     if (server) {
+        populate_server_frame(&pendingState.frame());
         for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
             if (!c->is_disconnected()) {
                 if (!recv_msg<&NetworkMessage::has_frame>(c->clientSocket, networkMessage).ok()) {
                     c->disconnect();
+                    continue;
                 }
+                merge_pending_frame(&*c, networkMessage.frame());
             }
         }
+        apply_frame(pendingState.frame());
         for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
             if (!c->is_disconnected()) {
-                networkMessage.Clear();
-                Frame *frame = networkMessage.mutable_frame();
-                populate_server_frame(frame);
-                if (!send_msg(c->clientSocket, networkMessage).ok()) { // Frame
+                if (!send_msg(c->clientSocket, pendingState.frameMessage).ok()) { // Frame
                     c->disconnect();
                 }
             }
         }
+        pendingState.frameMessage.Clear();
         while (!server->clients.empty()) {
             if (server->clients.back().is_disconnected())  {
                 server->clients.pop_back();
@@ -422,6 +754,9 @@ void process_network() {
             socklen_t addrlen = sizeof(addr);
             int s = accept(server->listenSocket, &addr, &addrlen);
             if (s < 0) {
+                if (errno != EWOULDBLOCK && errno != EAGAIN) {
+                    perror("accept failed");
+                }
                 break;
             }
             flags = fcntl(server->listenSocket, F_GETFL, 0);
@@ -432,124 +767,44 @@ void process_network() {
             }
             const Connect &connect = networkMessage.connect();
             fprintf(stderr, "Some guy connected: %s\n", connect.callsign().c_str());
+            RemoteClient * cl = server->create_client();
+            if (!cl) {
+                really_close(s);
+                break;
+            }
+            cl->clientSocket = s;
+            cl->callsign = connect.callsign();
+
             networkMessage.Clear();
             Game * game = networkMessage.mutable_game();
             Frame * frame = game->mutable_starting_state();
             populate_server_frame(frame);
             if (!send_msg(s, networkMessage).ok()) {
-                really_close(s);
+                cl->disconnect();
                 break;
-            }
-            bool found = false;
-            RemoteClient cl;
-            cl.clientSocket = s;
-            cl.callsign = "UNKNOWN";
-            for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
-                if (c->is_disconnected()) {
-                    *c = cl;
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) {
-                server->clients.push_back(cl);
             }
         }
     } else if (client) {
         networkMessage.Clear();
-        Frame *frame = networkMessage.mutable_frame();
-        populate_client_frame(frame);
-        if (!send_msg(client->clientSocket, networkMessage).ok()) {
+        populate_client_frame(&pendingState.frame());
+        if (!send_msg(client->clientSocket, pendingState.frameMessage).ok()) {
             uninit_network();
             return;
         }
+        pendingState.frameMessage.Clear();
         if (!recv_msg<&NetworkMessage::has_frame>(client->clientSocket, networkMessage).ok()) { // Frame
             uninit_network();
             return;
         }
+        apply_frame(networkMessage.frame());
     }
 
-
-
-#if 0
-    static int ctr = 0;
-    if ((ctr++ % 500) == 0) {
-        /*fprintf(memlog, "pos: ");
-        for (int addr = 0x1E6F2; addr < 0x1e6f2 + 12; addr += 4) {
-            unsigned int val;
-            mem_readd_checked(addr, &val);
-            fprintf(memlog, "%d ", (int)val);
-        }*/
-        for (int addr = 0xA9C2+0x13d30, i=0; i<0x3e; i += 1, addr+=12) {
-            unsigned int valx;
-            unsigned int valy;
-            unsigned int valz;
-            mem_readd_checked(addr, &valx);
-            mem_readd_checked(addr + 0x4, &valy);
-            mem_readd_checked(addr + 0x8, &valz);
-            if (valx != 0 || valy != 0 || valz != 0) {
-                fprintf(memlog, "%d:(%8d,%8d,%8d)", i, valx, valy, valz);
-            }
-        }
-        /*
-        fprintf(memlog, " pos: ");
-        for (int addr = 0xA9C2+0x13d30, i=0; i<6; i += 1, addr+=4) {
-            unsigned int val;
-            mem_readd_checked(addr, &val);
-            fprintf(memlog, "%.02f ", ((float)(int)val)/256.);
-            if (i == 2) {
-                addr += (0x3d - 1) * 12;
-            }
-        }
-        fprintf(memlog, " vel: ");
-        for (int addr = 0xCAE2+0x13d30, i=0; i<6; i += 1, addr+=4) {
-            unsigned int val;
-            mem_readd_checked(addr, &val);
-            fprintf(memlog, "%.02f ", ((float)(int)val)/256.);
-            if (i == 2) {
-                addr += (0x3d - 1) * 12;
-            }
-        }
-        fprintf(memlog, " RGT: ");
-        for (int addr = 0xAEB6+0x13d30, i=0; i<6; i += 1, addr+=4) {
-            unsigned int val;
-            mem_readd_checked(addr, &val);
-            fprintf(memlog, "%.02f ", ((float)(int)val)/256.);
-            if (i == 2) {
-                addr += (0x3d - 1) * 12;
-            }
-        }
-        fprintf(memlog, " UP: ");
-        for (int addr = 0xB1B6+0x13d30, i=0; i<6; i += 1, addr+=4) {
-            unsigned int val;
-            mem_readd_checked(addr, &val);
-            fprintf(memlog, "%.02f ", ((float)(int)val)/256.);
-            if (i == 2) {
-                addr += (0x3d - 1) * 12;
-            }
-        }
-        fprintf(memlog, " FWD: ");
-        for (int addr = 0xB4B6+0x13d30, i=0; i<6; i += 1, addr+=4) {
-            unsigned int val;
-            mem_readd_checked(addr, &val);
-            fprintf(memlog, "%.02f ", ((float)(int)val)/256.);
-            if (i == 2) {
-                addr += (0x3d - 1) * 12;
-            }
-        }
-        */
-        fprintf(memlog, "\n");
-        fflush(memlog);
-    }
-#endif
     {
         char buf[1];
         if (read(fire_fifo, &buf, 1) > 0) {
             fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
             CPU_Push16((Bit16u)SegValue(cs));
             CPU_Push16((Bit16u)reg_eip);
-            uint32_t data_segment_start = 0x13d30;
-            uint32_t loading_wing_commander_start = 0x0187;
             if (buf[0] == ' ') { // fire all guns
                 Bit8u shellcode[] = {
                     0x00, // nul terminate string
@@ -561,7 +816,7 @@ void process_network() {
                     0x5E, 0x61, 0x9D, 0xCB
                 };
                 for (int i = 0; i < sizeof(shellcode); i++) {
-                    mem_writeb_checked(data_segment_start + loading_wing_commander_start + i, shellcode[i]);
+                    mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
                 }
             } else if (buf[0] == ',') {
                 Bit8u shellcode[] = {
@@ -574,7 +829,7 @@ void process_network() {
                     0x5E, 0x5E, 0x61, 0x9D, 0xCB
                 };
                 for (int i = 0; i < sizeof(shellcode); i++) {
-                    mem_writeb_checked(data_segment_start + loading_wing_commander_start + i, shellcode[i]);
+                    mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
                 }
             } else if (buf[0] == '.') {
                 Bit8u shellcode[] = {
@@ -589,7 +844,7 @@ void process_network() {
                     0x5E, 0x61, 0x9D, 0xCB
                 };
                 for (int i = 0; i < sizeof(shellcode); i++) {
-                    mem_writeb_checked(data_segment_start + loading_wing_commander_start + i, shellcode[i]);
+                    mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
                 }
             } else if (buf[0] == 'f') { // fire one gun from a selected ship
                 buf[0] = 0;
@@ -621,7 +876,7 @@ void process_network() {
                     0x5E, 0x5E, 0x61, 0x9D, 0xCB
                 };
                 for (int i = 0; i < sizeof(shellcode); i++) {
-                    mem_writeb_checked(data_segment_start + loading_wing_commander_start + i, shellcode[i]);
+                    mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
                 }
             } else if (buf[0] == 'd') {
                 unsigned short arg_0, arg_2, arg_4, arg_6;
@@ -655,42 +910,78 @@ void process_network() {
                     0x56, // push si
                     0xbe, arg_0 & 0xff, arg_0 >> 8,
                     0x56, // push si
-                    // call far 12d7:012E
+                    // call far 12d7:0084
                     0x9A, 0x84, 0x00, 0xd7, 0x12,
                     // pop si, pop si, pop all regs, pop flags, retf
                     0x5E, 0x5E, 0x5E, 0x5E, 0x61, 0x9D, 0xCB
                 };
                 for (int i = 0; i < sizeof(shellcode); i++) {
-                    mem_writeb_checked(data_segment_start + loading_wing_commander_start + i, shellcode[i]);
+                    mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
                 }
             }
             manualDoDamage ++;
-            SegSet16(cs, data_segment_start >> 4);
-            reg_eip = loading_wing_commander_start + 1;
+            SegSet16(cs, DS);
+            reg_eip = shellcode_start + 1;
             fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
         }
     }
 
 }
 
-void doDamage() {
-    Bit16u arg0 = mem_readw(0x13d30 + reg_esp + 4);
-    Bit16u arg2 = mem_readw(0x13d30 + reg_esp + 6);
-    Bit16u arg4 = mem_readw(0x13d30 + reg_esp + 8);
-    Bit16u arg6 = mem_readw(0x13d30 + reg_esp + 10);
-    Bit32u xcoord = mem_readd(0x13d30 + arg6);
-    Bit32u ycoord = mem_readd(0x13d30 + arg6 + 4);
-    Bit32u zcoord = mem_readd(0x13d30 + arg6 + 8);
-    Bit32u randomSeed = mem_readd(0x13d30 + 0x7728);
+void damage_hook() {
+    NetworkShipId src = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
+    NetworkShipId dst = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 6);
+    Bit16u quantity = mem_readw(DS_OFF + reg_esp + 8);
+    Bit16u vectorAddr = mem_readw(DS_OFF + reg_esp + 10);
+    Bit32u randomSeed = mem_readd(DS_OFF + DS_RandomSeed);
+    Vector localVec;
+    Vector *vec = &localVec;
+    if (should_simulate_damage(src, dst)) {
+        ShipUpdate &update = get_update(pendingState.frame(), dst);
+        Damage *damage = update.add_damage();
+        damage->set_src(src.to_net());
+        damage->set_quantity(quantity);
+        vec = damage->mutable_pos();
+        damage->set_seed(randomSeed);
+    }
+    populate_vector(vec, vectorAddr);
     fprintf(stderr, "\r\ndoDamage(%d, %d, %d, <%d, %d, %d>) rng=%x\r\n",
-            arg0, arg2, arg4, xcoord, ycoord, zcoord, randomSeed);
+            src.to_net(), dst.to_net(), quantity, vec->x(), vec->y(), vec->z(), randomSeed);
+
+    // return -- do not apply damage
     reg_eip = 0x0d44;
 }
+
+void fire_hook() {
+    NetworkShipId src = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
+    Bit16u gun_id = mem_readw(DS_OFF + reg_esp + 6);
+    //Bit32u randomSeed = mem_readd(DS_OFF + DS_RandomSeed);
+    if (should_simulate_fire(src)) {
+        ShipUpdate &update = get_update(pendingState.frame(), src);
+        WeaponFire *fire = update.add_fire();
+        fire->set_gun_id(gun_id);
+    }
+    fprintf(stderr, "\r\ndoFire(%d, %d)\r\n",
+            src.to_net(), gun_id);
+
+    // return -- do not apply damage
+    reg_eip = 0x0d44;
+}
+
+void process_fire() {
+    // beginning of doDamage.
+    if (manualDoFire) {
+        manualDoFire --;
+    } else {
+        fire_hook();
+    }
+}
+
 void process_damage() {
     // beginning of doDamage.
     if (manualDoDamage) {
         manualDoDamage --;
     } else {
-        doDamage();
+        damage_hook();
     }
 }

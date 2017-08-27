@@ -227,6 +227,9 @@ Bits CPU_Core_Normal_Run(void) {
         if (isExecutingFunction(0x12d7, 0x0084)) {
             process_damage();
         }
+        if (isExecutingFunction(0x12d7, 0x012e)) {
+            process_fire();
+        }
         if (SegValue(cs) == 0x0560 && reg_eip == 0x20e3) {
             // this is the beginning of the WC main loop while in fighting.
             // then we can process network commands here and introduce things
