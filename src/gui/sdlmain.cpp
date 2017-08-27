@@ -2209,7 +2209,43 @@ void GFX_HandleVideoResize(int width, int height) {
 	sdl.update_window = true;
 }
 #endif
-
+extern void ForceMouseUpdate(float x, float y);
+void mouseAction(int numeric) {
+    int coordx = 0;
+    int coordy = 0;
+    switch(numeric) {
+      case 6:
+        coordx = 500;
+        coordy = 100;
+        break;
+      case 7:
+        coordx = 360;
+        coordy = 98;
+        break;
+      case 8:
+        coordx = 600;
+        coordy = 70;
+        break;
+      default:
+        coordx = 320;
+        coordy = 52;
+    }
+    ForceMouseUpdate(coordx, coordy);
+    switch(numeric) {
+      case 6:
+        Mouse_ButtonPressed(0);
+        break;
+      case 7:
+        Mouse_ButtonReleased(0);
+        break;
+      case 8:
+        Mouse_ButtonReleased(0);
+        break;
+      default:
+        Mouse_ButtonReleased(0);
+    }
+    
+}
 void GFX_Events() {
 	SDL_Event event;
 #if defined (REDUCE_JOYSTICK_POLLING)
@@ -2221,7 +2257,22 @@ void GFX_Events() {
 		MAPPER_UpdateJoysticks();
 	}
 #endif
+    //ForceMouseUpdate(rand()%640, rand()%240);
 	while (SDL_PollEvent(&event)) {
+        if (event.type == SDL_KEYUP) {
+            if (event.key.keysym.sym==SDLK_6) {
+                mouseAction(6);
+            }
+            if (event.key.keysym.sym==SDLK_7) {
+                mouseAction(7);
+            }
+            if (event.key.keysym.sym==SDLK_8) {
+                mouseAction(8);
+            }
+            if (event.key.keysym.sym==SDLK_9) {
+                mouseAction(9);
+            }
+        }
 		switch (event.type) {
 #if SDL_VERSION_ATLEAST(2,0,0)
 		case SDL_WINDOWEVENT:
