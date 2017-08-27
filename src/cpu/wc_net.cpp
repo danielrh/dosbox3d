@@ -701,6 +701,10 @@ void merge_pending_frame(RemoteClient *sender, const Frame &frame) {
     }
 }
 
+#include <deque>
+std::deque<std::pair<NetworkShipId,WeaponFire> > fireEvents;
+std::deque<std::pair<NetworkShipId,Damage> > damageEvents;
+
 void apply_frame(const Frame &frame) {
     for (int i = 0; i < frame.update_size(); i++) {
         const ShipUpdate &su = frame.update(i);
@@ -708,10 +712,27 @@ void apply_frame(const Frame &frame) {
             continue;
         }
         NetworkShipId ship_id = NetworkShipId::from_net(su.ship_id());
+        if (ship_id.to_local() >= 16) {
+            continue; // Do not simulate ephemeral objects.
+        }
         if ((client && !client->is_authoritative(ship_id)) || (server && ship_id.to_local() != 0)) {
             apply_ship_update_location(su);
         }
     }
+    for (int i = 0; i < frame.update_size(); i++) {
+        const ShipUpdate &su = frame.update(i);
+        if (!su.has_ship_id()) {
+            return;
+        }
+        NetworkShipId ship_id = NetworkShipId::from_net(su.ship_id());
+        for (int i = 0; i < su.fire_size(); i++) {
+            fireEvents.push_back(std::make_pair(ship_id, su.fire(i)));
+        }
+        for (int i = 0; i < su.damage_size(); i++) {
+            damageEvents.push_back(std::make_pair(ship_id, su.damage(i)));
+        }
+    }
+    /*
     for (int i = 0; i < frame.update_size(); i++) {
         const ShipUpdate &su = frame.update(i);
         if (!su.has_ship_id()) {
@@ -735,6 +756,14 @@ void apply_frame(const Frame &frame) {
             apply_damage(dam, ship_id);
             return; // FIXME: Bugs happen when pushing more than one call to the stack per frame
         }
+    }
+    */
+    if (!fireEvents.empty()) {
+        apply_weapon_fire(fireEvents.front().second, fireEvents.front().first);
+        fireEvents.pop_front();
+    } else if (!damageEvents.empty()) {
+        apply_damage(damageEvents.front().second, damageEvents.front().first);
+        damageEvents.pop_front();
     }
 }
 
