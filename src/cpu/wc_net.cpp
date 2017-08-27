@@ -489,8 +489,10 @@ enum DataSegValues {
     DS_Forward = 0xB4B6,
     DS_RandomSeed = 0x7728,
     DS_loading_wing_commander = 0x0187,
-    shellcode_start = DS_loading_wing_commander,
-    DS_tmpvector = DS_Pos + (12 * 0x3f)
+    DS_error_has_occurred = 0x0395,
+    shellcode_start = DS_error_has_occurred, // 249 bytes
+    DS_tmpvector = DS_loading_wing_commander // 107 bytes
+    //DS_tmpvector = DS_Pos + (12 * 0x3f)
 };
 
 template <class VectorClass>
@@ -601,6 +603,8 @@ void apply_damage(const Damage &dam, NetworkShipId ship_id) {
     fprintf(stderr, "\r\napply_damage(%d->%d, %d->%d, %d, <%d, %d, %d>) rng=%x\r\n",
             NetworkShipId::from_local(src).to_net(), src, NetworkShipId::from_local(dst).to_net(), dst, dam.quantity(), dbgx, dbgy, dbgz, dam.seed());
     {
+        CPU_Push16((Bit16u)SegValue(cs));
+        CPU_Push16((Bit16u)reg_eip);
         if (dam.has_seed()) {
             mem_writed(DS_OFF + DS_RandomSeed, dam.seed());
         }
@@ -646,6 +650,8 @@ void apply_weapon_fire(const WeaponFire &fire, NetworkShipId id) {
     fprintf(stderr, "\r\napply_fire(%d->%d, %d)\r\n",
             id.to_net(), id.to_local(), gun_id);
     {
+        CPU_Push16((Bit16u)SegValue(cs));
+        CPU_Push16((Bit16u)reg_eip);
         Bit8u shellcode[] = {
             0x00, // nul terminate string
             // push flags,
@@ -671,21 +677,6 @@ void apply_weapon_fire(const WeaponFire &fire, NetworkShipId id) {
     }
 }
 
-void apply_ship_update_events(const ShipUpdate &su) {
-    if (!su.has_ship_id()) {
-        return;
-    }
-    NetworkShipId ship_id = NetworkShipId::from_net(su.ship_id());
-    for (int i = 0; i < su.damage_size(); i++) {
-        const Damage &dam = su.damage(i);
-        apply_damage(dam, ship_id);
-    }
-    for (int i = 0; i < su.fire_size(); i++) {
-        const WeaponFire &fire = su.fire(i);
-        apply_weapon_fire(fire, ship_id);
-    }
-}
-
 void merge_pending_frame(RemoteClient *sender, const Frame &frame) {
     for (int i = 0; i < frame.update_size(); i++) {
         const ShipUpdate &su = frame.update(i);
@@ -699,13 +690,13 @@ void merge_pending_frame(RemoteClient *sender, const Frame &frame) {
                 *update->mutable_loc() = su.loc();
             }
         }
-        for (int i = 0; i < su.damage_size(); i++) {
-            const Damage &dam = su.damage(i);
-            *update->add_damage() = dam;
-        }
         for (int i = 0; i < su.fire_size(); i++) {
             const WeaponFire &fire = su.fire(i);
             *update->add_fire() = fire;
+        }
+        for (int i = 0; i < su.damage_size(); i++) {
+            const Damage &dam = su.damage(i);
+            *update->add_damage() = dam;
         }
     }
 }
@@ -720,7 +711,30 @@ void apply_frame(const Frame &frame) {
         if ((client && !client->is_authoritative(ship_id)) || (server && ship_id.to_local() != 0)) {
             apply_ship_update_location(su);
         }
-        apply_ship_update_events(su);
+    }
+    for (int i = 0; i < frame.update_size(); i++) {
+        const ShipUpdate &su = frame.update(i);
+        if (!su.has_ship_id()) {
+            return;
+        }
+        NetworkShipId ship_id = NetworkShipId::from_net(su.ship_id());
+        for (int i = 0; i < su.fire_size(); i++) {
+            const WeaponFire &fire = su.fire(i);
+            apply_weapon_fire(fire, ship_id);
+            return; // FIXME: Bugs happen when pushing more than one call to the stack per frame
+        }
+    }
+    for (int i = 0; i < frame.update_size(); i++) {
+        const ShipUpdate &su = frame.update(i);
+        if (!su.has_ship_id()) {
+            return;
+        }
+        NetworkShipId ship_id = NetworkShipId::from_net(su.ship_id());
+        for (int i = 0; i < su.damage_size(); i++) {
+            const Damage &dam = su.damage(i);
+            apply_damage(dam, ship_id);
+            return; // FIXME: Bugs happen when pushing more than one call to the stack per frame
+        }
     }
 }
 
@@ -848,9 +862,9 @@ void process_network() {
         char buf[1];
         if (read(fire_fifo, &buf, 1) > 0) {
             fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
-            CPU_Push16((Bit16u)SegValue(cs));
-            CPU_Push16((Bit16u)reg_eip);
             if (buf[0] == ' ') { // fire all guns
+                CPU_Push16((Bit16u)SegValue(cs));
+                CPU_Push16((Bit16u)reg_eip);
                 Bit8u shellcode[] = {
                     0x00, // nul terminate string
                     // push flags, push all regs, xor si,si, push si
@@ -863,7 +877,12 @@ void process_network() {
                 for (int i = 0; i < sizeof(shellcode); i++) {
                     mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
                 }
+                SegSet16(cs, DS);
+                reg_eip = shellcode_start + 1;
+                fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
             } else if (buf[0] == ',') {
+                CPU_Push16((Bit16u)SegValue(cs));
+                CPU_Push16((Bit16u)reg_eip);
                 Bit8u shellcode[] = {
                     0x00, // nul terminate string
                     // push flags, push all regs, xor si,si, push si
@@ -876,7 +895,12 @@ void process_network() {
                 for (int i = 0; i < sizeof(shellcode); i++) {
                     mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
                 }
+                SegSet16(cs, DS);
+                reg_eip = shellcode_start + 1;
+                fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
             } else if (buf[0] == '.') {
+                CPU_Push16((Bit16u)SegValue(cs));
+                CPU_Push16((Bit16u)reg_eip);
                 Bit8u shellcode[] = {
                     0x00, // nul terminate string
                     // push flags, push all regs, xor si,si, push si
@@ -891,7 +915,13 @@ void process_network() {
                 for (int i = 0; i < sizeof(shellcode); i++) {
                     mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
                 }
+                SegSet16(cs, DS);
+                reg_eip = shellcode_start + 1;
+                fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
             } else if (buf[0] == 'f') { // fire one gun from a selected ship
+                CPU_Push16((Bit16u)SegValue(cs));
+                CPU_Push16((Bit16u)reg_eip);
+                manualDoFire ++;
                 buf[0] = 0;
                 send_or_recv_all(ReadFunctor(fire_fifo), &buf, 1);
                 uint32_t gun_id = 0;
@@ -923,7 +953,30 @@ void process_network() {
                 for (int i = 0; i < sizeof(shellcode); i++) {
                     mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
                 }
+                SegSet16(cs, DS);
+                reg_eip = shellcode_start + 1;
+                fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
+            } else if (buf[0] == 'F') { // fire one gun from a selected ship
+                buf[0] = 0;
+                send_or_recv_all(ReadFunctor(fire_fifo), &buf, 1);
+                uint32_t gun_id = 0;
+                uint32_t ship_id = 0;
+                if (buf[0] >= '0' && buf[0] <= '9') {
+                    gun_id = buf[0] - '0';
+                } else if (buf[0] >= 'a' && buf[0] <= 'z') {
+                    gun_id = buf[0] - 'a';
+                    ship_id = 1;
+                } else if (buf[0] >= 'A' && buf[0] <= 'Z') {
+                    gun_id = buf[0] - 'A';
+                    ship_id = 2;
+                }
+                WeaponFire wf;
+                wf.set_gun_id(gun_id);
+                apply_weapon_fire(wf, NetworkShipId::from_local(ship_id));
             } else if (buf[0] == 'd') {
+                CPU_Push16((Bit16u)SegValue(cs));
+                CPU_Push16((Bit16u)reg_eip);
+                manualDoDamage ++;
                 unsigned short arg_0, arg_2, arg_4, arg_6;
                 char argbuf[100] = {0};
                 int i;
@@ -963,11 +1016,10 @@ void process_network() {
                 for (int i = 0; i < sizeof(shellcode); i++) {
                     mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
                 }
+                SegSet16(cs, DS);
+                reg_eip = shellcode_start + 1;
+                fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
             }
-            manualDoDamage ++;
-            SegSet16(cs, DS);
-            reg_eip = shellcode_start + 1;
-            fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
         }
     }
 
