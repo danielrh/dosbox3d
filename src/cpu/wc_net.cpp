@@ -17,6 +17,14 @@
 #include "../wc.pb.h"
 NetConfig net_config;
 
+bool DEBUG_PROTOBUF =
+#ifdef HEAVY_NET_DEBUG
+    true
+#else
+    false
+#endif
+    ;
+
 NetConfig::NetConfig() {
     host = getenv("WCHOST");
     portstr = getenv("WCPORT");
@@ -373,8 +381,10 @@ RecvStatus recv_msg(int sock, NetworkMessage &msg) {
                 "unknown"
 #endif
         ;
+#ifdef HEAVY_NET_DEBUG
     fprintf(stderr, "Begin Receive %s\n",
                 func_type);
+#endif
     if ((ret = send_or_recv_all(RecvFunctor(sock), lengthData, sizeof(lengthData))) < sizeof(lengthData)) {
         // We need to handle disconnects here.
         if (ret < 0) {
@@ -413,15 +423,25 @@ RecvStatus recv_msg(int sock, NetworkMessage &msg) {
 
         return RecvStatus::FAIL();
     }
+#ifdef HEAVY_NET_DEBUG
     fprintf(stderr, "Finished message %s have %s len %d\n",
             func_type,
             message_type(msg),
             (int)recvData.size() + 3);
+#endif
 
+    if (DEBUG_PROTOBUF) {
+        std::string debug = msg.DebugString();
+        fprintf(stderr, "%s\n", debug.c_str());
+    }
     return RecvStatus::OK();
 }
 
 RecvStatus send_msg(int sock, const NetworkMessage &msg) {
+    if (DEBUG_PROTOBUF) {
+        std::string debug = msg.DebugString();
+        fprintf(stderr, "SEND %s\n", debug.c_str());
+    }
     std::string toSend = "XXX";
     bool success = msg.AppendToString(&toSend); // encode protobuf
     if (!success) {
@@ -440,13 +460,17 @@ RecvStatus send_msg(int sock, const NetworkMessage &msg) {
     toSend[0] = (char)(dataLength >> 16);
     toSend[1] = (char)(dataLength >> 8);
     toSend[2] = (char)(dataLength);
+#ifdef HEAVY_NET_DEBUG
     fprintf(stderr, "start send %s: %d\n", message_type(msg), (int)dataLength);
+#endif
     if (send_or_recv_all(SendFunctor(sock), toSend.data(), toSend.length()) < 0) {
         // We need to handle disconnects here.
         perror("send failed");
         return RecvStatus::FAIL();
     }
+#ifdef HEAVY_NET_DEBUG
     fprintf(stderr, "send ok %d\n", (int)dataLength);
+#endif
     return RecvStatus::OK();
 }
 
@@ -552,16 +576,29 @@ void apply_damage(const Damage &dam, NetworkShipId ship_id) {
         src = NetworkShipId::from_net(dam.src()).to_local();
     }
     int dst = ship_id.to_local();
+    int dbgx, dbgy, dbgz;
     if (dam.has_pos()) {
         store_vector(dam.pos(), DS_tmpvector);
+        dbgx = dam.pos().x();
+        dbgy = dam.pos().y();
+        dbgz = dam.pos().z();
     } else {
         Vector defaultPos;
         defaultPos.set_x(0);
         defaultPos.set_y(0);
         defaultPos.set_z(256);
+        dbgx = 0;
+        dbgy = 0;
+        dbgz = 256;
         store_vector(defaultPos, DS_tmpvector);
     }
+        ;
+    fprintf(stderr, "\r\napply_damage(%d->%d, %d->%d, %d, <%d, %d, %d>) rng=%x\r\n",
+            NetworkShipId::from_local(src).to_net(), src, NetworkShipId::from_local(dst).to_net(), dst, dam.quantity(), dbgx, dbgy, dbgz, dam.seed());
     {
+        if (dam.has_seed()) {
+            mem_writed(DS_OFF + DS_RandomSeed, dam.seed());
+        }
         unsigned short arg_0 = src, arg_2 = dst, arg_4 = dam.quantity(), arg_6 = DS_tmpvector;
         Bit8u shellcode[] = {
             0x00, // nul terminate string
@@ -601,6 +638,8 @@ void apply_weapon_fire(const WeaponFire &fire, NetworkShipId id) {
         gun_id = fire.gun_id();
     }
     uint32_t ship_id = id.to_local();
+    fprintf(stderr, "\r\napply_fire(%d->%d, %d)\r\n",
+            id.to_net(), id.to_local(), gun_id);
     {
         Bit8u shellcode[] = {
             0x00, // nul terminate string
@@ -777,6 +816,7 @@ void process_network() {
 
             networkMessage.Clear();
             Game * game = networkMessage.mutable_game();
+            game->set_assigned_player_id(cl->id.to_net());
             Frame * frame = game->mutable_starting_state();
             populate_server_frame(frame);
             if (!send_msg(s, networkMessage).ok()) {
@@ -936,7 +976,9 @@ void damage_hook() {
     Bit32u randomSeed = mem_readd(DS_OFF + DS_RandomSeed);
     Vector localVec;
     Vector *vec = &localVec;
+    bool shouldSim = false;
     if (should_simulate_damage(src, dst)) {
+        shouldSim = true;
         ShipUpdate &update = get_update(pendingState.frame(), dst);
         Damage *damage = update.add_damage();
         damage->set_src(src.to_net());
@@ -945,8 +987,9 @@ void damage_hook() {
         damage->set_seed(randomSeed);
     }
     populate_vector(vec, vectorAddr);
-    fprintf(stderr, "\r\ndoDamage(%d, %d, %d, <%d, %d, %d>) rng=%x\r\n",
-            src.to_net(), dst.to_net(), quantity, vec->x(), vec->y(), vec->z(), randomSeed);
+    fprintf(stderr, "\r\ndoDamage%s(%d->%d, %d->%d, %d, <%d, %d, %d>) rng=%x\r\n",
+            shouldSim ? "[simulated]" : "[ignored]",
+            src.to_net(), src.to_local(), dst.to_net(), dst.to_local(), quantity, vec->x(), vec->y(), vec->z(), randomSeed);
 
     // return -- do not apply damage
     reg_eip = 0x0d44;
@@ -956,12 +999,15 @@ void fire_hook() {
     NetworkShipId src = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
     Bit16u gun_id = mem_readw(DS_OFF + reg_esp + 6);
     //Bit32u randomSeed = mem_readd(DS_OFF + DS_RandomSeed);
+    bool shouldSim = false;
     if (should_simulate_fire(src)) {
+        shouldSim = true;
         ShipUpdate &update = get_update(pendingState.frame(), src);
         WeaponFire *fire = update.add_fire();
         fire->set_gun_id(gun_id);
     }
-    fprintf(stderr, "\r\ndoFire(%d, %d)\r\n",
+    fprintf(stderr, "\r\ndoFire%s(%d, %d)\r\n",
+            shouldSim ? "[simulated]" : "[ignored]",
             src.to_net(), gun_id);
 
     // return -- do not apply damage
