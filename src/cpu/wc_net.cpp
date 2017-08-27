@@ -312,6 +312,11 @@ void init_network() {
         }
 
         if (server) {
+            int enable = 1;
+            if (setsockopt(s, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(int)) < 0) {
+                perror("setsockopt(SO_REUSEADDR) failed");
+                abort();
+            }
             if (bind(s, res->ai_addr, res->ai_addrlen) < 0) {
                 cause = "connect";
                 close(s);
@@ -712,7 +717,7 @@ void apply_frame(const Frame &frame) {
             continue;
         }
         NetworkShipId ship_id = NetworkShipId::from_net(su.ship_id());
-        if ((client && client->is_authoritative(ship_id)) || (server && ship_id.to_local() != 0)) {
+        if ((client && !client->is_authoritative(ship_id)) || (server && ship_id.to_local() != 0)) {
             apply_ship_update_location(su);
         }
         apply_ship_update_events(su);

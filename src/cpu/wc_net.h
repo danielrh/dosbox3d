@@ -58,7 +58,7 @@ public:
     static NetworkShipId from_memory_word(int addr) {
         Bit16u id = -1;
         mem_readw_checked(addr, &id);
-        return NetworkShipId(id);
+        return NetworkShipId::from_local(id);
     }
 
     int to_local() const {
