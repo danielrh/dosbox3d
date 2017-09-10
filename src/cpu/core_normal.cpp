@@ -222,13 +222,21 @@ bool isExecutingFunction(Bit16u stubSeg, Bit16u stubOff) {
     return false;
 }
 
+enum {
+    STUB143 = 0x12d7,
+    STUB145 = 0x12f2
+};
+
 Bits CPU_Core_Normal_Run(void) {
 	while (CPU_Cycles-->0) {
-        if (isExecutingFunction(0x12d7, 0x0084)) {
+        if (isExecutingFunction(STUB143, 0x0084)) {
             process_damage();
         }
-        if (isExecutingFunction(0x12d7, 0x012e)) {
+        if (isExecutingFunction(STUB143, 0x012e)) {
             process_fire();
+        }
+        if (isExecutingFunction(STUB145, 0x00b6)) {
+            process_spawn_ship();
         }
         if (SegValue(cs) == 0x0560 && reg_eip == 0x20e3) {
             // this is the beginning of the WC main loop while in fighting.

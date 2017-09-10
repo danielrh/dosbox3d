@@ -264,6 +264,8 @@ bool is_client_authoritative(NetworkShipId sender, NetworkShipId id) {
 
 int manualDoDamage = 0;
 int manualDoFire = 0;
+int manualSpawnShip = 0;
+int allowSpawnShip = 1;
 
 int fire_fifo = open("/tmp/fire.fifo", O_RDONLY|O_NONBLOCK);
 FILE *memlog = fopen("/tmp/mem.txt", "a");
@@ -891,6 +893,12 @@ void process_network() {
         char buf[1];
         if (read(fire_fifo, &buf, 1) > 0) {
             fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
+            if (buf[0] == '^') {
+                allowSpawnShip = 1;
+            }
+            if (buf[0] == '%') {
+                allowSpawnShip = 0;
+            }
             if (buf[0] == ' ') { // fire all guns
                 CPU_Push16((Bit16u)SegValue(cs));
                 CPU_Push16((Bit16u)reg_eip);
@@ -1078,7 +1086,7 @@ void damage_hook() {
             src.to_net(), src.to_local(), dst.to_net(), dst.to_local(), quantity, vec->x(), vec->y(), vec->z(), randomSeed);
 
     // return -- do not apply damage
-    reg_eip = 0x0d44;
+    reg_eip = 0x0d44; //ovr143
 }
 
 void fire_hook() {
@@ -1097,7 +1105,12 @@ void fire_hook() {
             src.to_net(), gun_id);
 
     // return -- do not apply damage
-    reg_eip = 0x0d44;
+    reg_eip = 0x0d44; //ovr143
+}
+
+void spawn_ship_hook() {
+    // return -- do not apply damage
+    reg_eip = 0x1252; // ovr145 retf
 }
 
 void process_fire() {
@@ -1115,5 +1128,17 @@ void process_damage() {
         manualDoDamage --;
     } else {
         damage_hook();
+    }
+}
+
+#include <unistd.h>
+
+void process_spawn_ship() {
+    // beginning of doDamage.
+    if (manualSpawnShip) {
+        manualSpawnShip --;
+    } else if (access("/tmp/noautospawn",F_OK)!=0) {
+    } else {
+        spawn_ship_hook();
     }
 }

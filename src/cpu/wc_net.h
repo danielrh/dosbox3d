@@ -4,6 +4,8 @@
 void process_network();
 void process_damage();
 void process_fire();
+void process_spawn_ship();
+
 class NetConfig {
 public:
     char *host;
