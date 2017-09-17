@@ -13,6 +13,7 @@
 #include "cpu.h"
 #include "paging.h"
 #include <vector>
+#include <sstream>
 #include "wc_net.h"
 #include "../wc.pb.h"
 NetConfig net_config;
@@ -1113,6 +1114,11 @@ void spawn_ship_hook() {
     reg_eip = 0x1252; // ovr145 retf
 }
 
+void despawn_ship_hook() {
+    // return -- do not apply damage
+    reg_eip = 0x1ce0; // ovr140 retf
+}
+
 void process_fire() {
     // beginning of doDamage.
     if (manualDoFire) {
@@ -1140,5 +1146,20 @@ void process_spawn_ship() {
     } else if (access("/tmp/noautospawn",F_OK)!=0) {
     } else {
         spawn_ship_hook();
+    }
+}
+
+void process_despawn_ship() {
+    // beginning of doDamage.
+    NetworkShipId ship = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
+    fprintf(stderr,"despawn %d\n", ship.to_net());
+
+    std::ostringstream filename;
+    filename << "/tmp/nodespawn" << (ship.to_net());
+    if (manualSpawnShip) {
+        manualSpawnShip --;
+    } else if (access(filename.str().c_str(),F_OK)!=0) {
+    } else {
+        despawn_ship_hook();
     }
 }

@@ -5,6 +5,7 @@ void process_network();
 void process_damage();
 void process_fire();
 void process_spawn_ship();
+void process_despawn_ship();
 
 class NetConfig {
 public:
