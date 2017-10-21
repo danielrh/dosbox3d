@@ -235,15 +235,19 @@ enum {
 
 Bits CPU_Core_Normal_Run(void) {
 	while (CPU_Cycles-->0) {
+        // do_damage
         if (isExecutingFunction(STUB143, 0x0084)) {
             process_damage();
         }
+        // fireGunFromShip
         if (isExecutingFunction(STUB143, 0x012e)) {
             process_fire();
         }
+        // outerSpawnShipEntity
         if (isExecutingFunction(STUB145, 0x00b6)) {
             process_spawn_ship();
         }
+        // despawn
         if (isExecutingFunction(STUB140, 0x01dd)) {
             process_despawn_ship();
         }

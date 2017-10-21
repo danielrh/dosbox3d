@@ -266,7 +266,12 @@ bool is_client_authoritative(NetworkShipId sender, NetworkShipId id) {
 int manualDoDamage = 0;
 int manualDoFire = 0;
 int manualSpawnShip = 0;
-int allowSpawnShip = 1;
+
+void setSimulating(bool sim) {
+    manualDoDamage = (int)sim;
+    manualDoFire = (int)sim;
+    manualSpawnShip = (int)sim;
+}
 
 int fire_fifo = open("/tmp/fire.fifo", O_RDONLY|O_NONBLOCK);
 FILE *memlog = fopen("/tmp/mem.txt", "a");
@@ -634,7 +639,7 @@ void apply_damage(const Damage &dam, NetworkShipId ship_id) {
         for (int i = 0; i < sizeof(shellcode); i++) {
             mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
         }
-        manualDoDamage ++;
+        assert(manualDoDamage);
         SegSet16(cs, DS);
         reg_eip = shellcode_start + 1;
         fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
@@ -889,178 +894,6 @@ void process_network() {
         }
         apply_frame(networkMessage.frame());
     }
-
-    {
-        char buf[1];
-        if (read(fire_fifo, &buf, 1) > 0) {
-            fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
-            if (buf[0] == '^') {
-                allowSpawnShip = 1;
-            }
-            if (buf[0] == '%') {
-                allowSpawnShip = 0;
-            }
-            if (buf[0] == ' ') { // fire all guns
-                CPU_Push16((Bit16u)SegValue(cs));
-                CPU_Push16((Bit16u)reg_eip);
-                Bit8u shellcode[] = {
-                    0x00, // nul terminate string
-                    // push flags, push all regs, xor si,si, push si
-                    0x9C, 0x60, 0x33, 0xF6, 0x56,
-                    // call far 12d7:0156
-                    0x9A, 0x56, 0x01, 0xd7, 0x12,
-                    // pop si, pop all regs, pop flags, retf
-                    0x5E, 0x61, 0x9D, 0xCB
-                };
-                for (int i = 0; i < sizeof(shellcode); i++) {
-                    mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
-                }
-                SegSet16(cs, DS);
-                reg_eip = shellcode_start + 1;
-                fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
-            } else if (buf[0] == ',') {
-                CPU_Push16((Bit16u)SegValue(cs));
-                CPU_Push16((Bit16u)reg_eip);
-                Bit8u shellcode[] = {
-                    0x00, // nul terminate string
-                    // push flags, push all regs, xor si,si, push si
-                    0x9C, 0x60, 0x33, 0xF6, 0x56, 0x56,
-                    // call far 12d7:012E
-                    0x9A, 0x56, 0x01, 0xd7, 0x12,
-                    // pop si, pop all regs, pop flags, retf
-                    0x5E, 0x5E, 0x61, 0x9D, 0xCB
-                };
-                for (int i = 0; i < sizeof(shellcode); i++) {
-                    mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
-                }
-                SegSet16(cs, DS);
-                reg_eip = shellcode_start + 1;
-                fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
-            } else if (buf[0] == '.') {
-                CPU_Push16((Bit16u)SegValue(cs));
-                CPU_Push16((Bit16u)reg_eip);
-                Bit8u shellcode[] = {
-                    0x00, // nul terminate string
-                    // push flags, push all regs, xor si,si, push si
-                    0x9C, 0x60,
-                    0xbe, 0, 0,// mov si <-- gun_id
-                    0x56,
-                    // call far 12d7:012E
-                    0x9A, 0x56, 0x01, 0xd7, 0x12,
-                    // pop si, pop all regs, pop flags, retf
-                    0x5E, 0x61, 0x9D, 0xCB
-                };
-                for (int i = 0; i < sizeof(shellcode); i++) {
-                    mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
-                }
-                SegSet16(cs, DS);
-                reg_eip = shellcode_start + 1;
-                fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
-            } else if (buf[0] == 'f') { // fire one gun from a selected ship
-                CPU_Push16((Bit16u)SegValue(cs));
-                CPU_Push16((Bit16u)reg_eip);
-                manualDoFire ++;
-                buf[0] = 0;
-                send_or_recv_all(ReadFunctor(fire_fifo), &buf, 1);
-                uint32_t gun_id = 0;
-                uint32_t ship_id = 0;
-                if (buf[0] >= '0' && buf[0] <= '9') {
-                    gun_id = buf[0] - '0';
-                } else if (buf[0] >= 'a' && buf[0] <= 'z') {
-                    gun_id = buf[0] - 'a';
-                    ship_id = 1;
-                } else if (buf[0] >= 'A' && buf[0] <= 'Z') {
-                    gun_id = buf[0] - 'A';
-                    ship_id = 2;
-                }
-                Bit8u shellcode[] = {
-                    0x00, // nul terminate string
-                    // push flags,
-                    0x9C, //PUSHF
-                    //push all regs, xor si,si, push si
-                    0x60, //PUSHA
-                    0xbe, gun_id & 0xff, gun_id >> 8,// mov si <-- gun_id
-                    0x56, // push si
-                    0xbe, ship_id & 0xff, ship_id >> 8, // mov si <- ship_id
-                    0x56, // push si
-                    // call far 12d7:012E
-                    0x9A, 0x2E, 0x01, 0xd7, 0x12,
-                    // pop si, pop si, pop all regs, pop flags, retf
-                    0x5E, 0x5E, 0x61, 0x9D, 0xCB
-                };
-                for (int i = 0; i < sizeof(shellcode); i++) {
-                    mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
-                }
-                SegSet16(cs, DS);
-                reg_eip = shellcode_start + 1;
-                fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
-            } else if (buf[0] == 'F') { // fire one gun from a selected ship
-                buf[0] = 0;
-                send_or_recv_all(ReadFunctor(fire_fifo), &buf, 1);
-                uint32_t gun_id = 0;
-                uint32_t ship_id = 0;
-                if (buf[0] >= '0' && buf[0] <= '9') {
-                    gun_id = buf[0] - '0';
-                } else if (buf[0] >= 'a' && buf[0] <= 'z') {
-                    gun_id = buf[0] - 'a';
-                    ship_id = 1;
-                } else if (buf[0] >= 'A' && buf[0] <= 'Z') {
-                    gun_id = buf[0] - 'A';
-                    ship_id = 2;
-                }
-                WeaponFire wf;
-                wf.set_gun_id(gun_id);
-                apply_weapon_fire(wf, NetworkShipId::from_local(ship_id));
-            } else if (buf[0] == 'd') {
-                CPU_Push16((Bit16u)SegValue(cs));
-                CPU_Push16((Bit16u)reg_eip);
-                manualDoDamage ++;
-                unsigned short arg_0, arg_2, arg_4, arg_6;
-                char argbuf[100] = {0};
-                int i;
-                for (i = 0; i < 99;) {
-                    if (read(fire_fifo, argbuf + i, 1) <= 0) {
-                        if (errno != EAGAIN && errno != EINTR) {
-                            break;
-                        }
-                    } else {
-                        if (argbuf[i] == '\n') {
-                            break;
-                        }
-                        i++;
-                    }
-                }
-                argbuf[i] = '\0';
-                sscanf(argbuf ,"%hd %hd %hd %hd", &arg_0, &arg_2, &arg_4, &arg_6);
-                Bit8u shellcode[] = {
-                    0x00, // nul terminate string
-                    // push flags,
-                    0x9C, //PUSHF
-                    //push all regs, xor si,si, push si
-                    0x60, //PUSHA
-                    0xbe, arg_6 & 0xff, arg_6 >> 8,
-                    0x56, // push si
-                    0xbe, arg_4 & 0xff, arg_4 >> 8,
-                    0x56, // push si
-                    0xbe, arg_2 & 0xff, arg_2 >> 8,
-                    0x56, // push si
-                    0xbe, arg_0 & 0xff, arg_0 >> 8,
-                    0x56, // push si
-                    // call far 12d7:0084
-                    0x9A, 0x84, 0x00, 0xd7, 0x12,
-                    // pop si, pop si, pop all regs, pop flags, retf
-                    0x5E, 0x5E, 0x5E, 0x5E, 0x61, 0x9D, 0xCB
-                };
-                for (int i = 0; i < sizeof(shellcode); i++) {
-                    mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
-                }
-                SegSet16(cs, DS);
-                reg_eip = shellcode_start + 1;
-                fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
-            }
-        }
-    }
-
 }
 
 void damage_hook() {
@@ -1111,6 +944,7 @@ void fire_hook() {
 
 void spawn_ship_hook() {
     // return -- do not apply damage
+    reg_eax = 0xffffffff;
     reg_eip = 0x1252; // ovr145 retf
 }
 
@@ -1137,13 +971,10 @@ void process_damage() {
     }
 }
 
-#include <unistd.h>
-
 void process_spawn_ship() {
     // beginning of doDamage.
     if (manualSpawnShip) {
         manualSpawnShip --;
-    } else if (access("/tmp/noautospawn",F_OK)!=0) {
     } else {
         spawn_ship_hook();
     }
@@ -1154,11 +985,8 @@ void process_despawn_ship() {
     NetworkShipId ship = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
     fprintf(stderr,"despawn %d\n", ship.to_net());
 
-    std::ostringstream filename;
-    filename << "/tmp/nodespawn" << (ship.to_net());
     if (manualSpawnShip) {
         manualSpawnShip --;
-    } else if (access(filename.str().c_str(),F_OK)!=0) {
     } else {
         despawn_ship_hook();
     }
