@@ -24,20 +24,29 @@ message Location {
 
 message Damage {
         optional Vector pos = 1;
-        optional uint32 src = 2; // 16 bits
-        optional uint32 quantity = 3; // 16 its
+        optional uint32 shooter = 2; // 16 bits
+        optional uint32 quantity = 3; // 16 bits
+        optional uint32 ship_id = 4;
         optional fixed32 seed = 5;
 }
 
 message WeaponFire {
         optional uint32 gun_id = 1; // 4 bits
+        optional uint32 shooter = 2;
+}
+
+message Spawn {
+    optional uint32 mission_ship_id = 1;
+    optional uint32 situation_id = 2;
+}
+
+message Despawn {
+    optional uint32 ship_id = 1;
 }
 
 message ShipUpdate {
         optional uint32 ship_id = 1; // 16 bits
         optional Location loc = 2;
-        repeated Damage damage = 3;
-        repeated WeaponFire fire = 4;
 
         optional string callsign_update = 255;
 }
@@ -53,10 +62,17 @@ enum AutoPilotState {
      Engaged = 1;
      Finished = 2;
 }
+message Event {
+  optional string chat = 1;
+  optional Spawn spawn = 2;
+  optional Damage damage = 3;
+  optional WeaponFire fire = 4;
+  optional Despawn despawn = 5;
+}
 
 message Frame {
     repeated ShipUpdate update = 1; // one update per updated ship
-    repeated string chat = 2;
+    repeated Event event = 2;
     optional AutoPilotState autopiloting = 16;
     optional GameState game_update = 17;
 }

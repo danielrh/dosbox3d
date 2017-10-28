@@ -263,15 +263,17 @@ bool is_client_authoritative(NetworkShipId sender, NetworkShipId id) {
     return sender == id;
 }
 
-int manualDoDamage = 0;
-int manualDoFire = 0;
-int manualSpawnShip = 0;
+bool isServer = (getenv("WCHOST") == NULL);
+int manualDoDamage = isServer ? -1 : 0;
+int manualDoFire = isServer ? -1 : 0;
+int manualSpawnShip = -1;
+int manualDespawnShip = -1;
 
-void setSimulating(bool sim) {
+/*void setSimulating(bool sim) {
     manualDoDamage = (int)sim;
     manualDoFire = (int)sim;
-    manualSpawnShip = (int)sim;
-}
+    manualSpawnShip = -1; //(int)sim;
+}*/
 
 int fire_fifo = open("/tmp/fire.fifo", O_RDONLY|O_NONBLOCK);
 FILE *memlog = fopen("/tmp/mem.txt", "a");
@@ -578,17 +580,18 @@ void apply_ship_update_location(const ShipUpdate &su) {
     }
 }
 
-void apply_damage(const Damage &dam, NetworkShipId ship_id) {
+void apply_damage(const Damage &dam) {
+    NetworkShipId ship_id = NetworkShipId::from_net(dam.ship_id());
     int dam_src = -1;
-    if (dam.has_src()) {
-        dam_src = dam.src();
+    if (dam.has_shooter()) {
+        dam_src = dam.shooter();
     }
     /*if (!should_simulate_damage(ship_id, dam_src)) {
         return;
     }*/
     int src = -1;
-    if (dam.has_src()) {
-        src = NetworkShipId::from_net(dam.src()).to_local();
+    if (dam.has_shooter()) {
+        src = NetworkShipId::from_net(dam.shooter()).to_local();
     }
     int dst = ship_id.to_local();
     int dbgx, dbgy, dbgz;
@@ -639,17 +642,21 @@ void apply_damage(const Damage &dam, NetworkShipId ship_id) {
         for (int i = 0; i < sizeof(shellcode); i++) {
             mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
         }
-        assert(manualDoDamage);
+        if (manualDoDamage >= 0) {
+            manualDoDamage ++;
+        }
+        assert(manualDoDamage == 1 || manualDoDamage == -1);
         SegSet16(cs, DS);
         reg_eip = shellcode_start + 1;
         fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
     }
 }
 
-void apply_weapon_fire(const WeaponFire &fire, NetworkShipId id) {
+void apply_weapon_fire(const WeaponFire &fire) {
     /*if (!should_simulate_damage(ship_id, ship_id)) {
         return;
     }*/
+    NetworkShipId id = NetworkShipId::from_net(fire.shooter());
     uint32_t gun_id = 0;
     if (fire.has_gun_id()) {
         gun_id = fire.gun_id();
@@ -678,12 +685,18 @@ void apply_weapon_fire(const WeaponFire &fire, NetworkShipId id) {
         for (int i = 0; i < sizeof(shellcode); i++) {
             mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
         }
-        manualDoFire ++;
+        if (manualDoFire >= 0) {
+            manualDoFire ++;
+        }
+        assert(manualDoFire == 1 || manualDoFire == -1);
         SegSet16(cs, DS);
         reg_eip = shellcode_start + 1;
         fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
     }
 }
+
+#include <deque>
+std::deque<Event> queuedEvents;
 
 void merge_pending_frame(RemoteClient *sender, const Frame &frame) {
     for (int i = 0; i < frame.update_size(); i++) {
@@ -698,20 +711,17 @@ void merge_pending_frame(RemoteClient *sender, const Frame &frame) {
                 *update->mutable_loc() = su.loc();
             }
         }
-        for (int i = 0; i < su.fire_size(); i++) {
-            const WeaponFire &fire = su.fire(i);
-            *update->add_fire() = fire;
-        }
-        for (int i = 0; i < su.damage_size(); i++) {
-            const Damage &dam = su.damage(i);
-            *update->add_damage() = dam;
-        }
+    }
+    for (int i = 0; i < frame.event_size(); i++) {
+        const Event &event = frame.event(i);
+        // FIXME: Check that the ship is authoritive
+        *pendingState.frame().add_event() = event;
+    }
+    for (int i = 0; i < frame.event_size(); i++) {
+        const Event &ev = frame.event(i);
+        queuedEvents.push_back(ev);
     }
 }
-
-#include <deque>
-std::deque<std::pair<NetworkShipId,WeaponFire> > fireEvents;
-std::deque<std::pair<NetworkShipId,Damage> > damageEvents;
 
 void apply_frame(const Frame &frame) {
     for (int i = 0; i < frame.update_size(); i++) {
@@ -727,17 +737,10 @@ void apply_frame(const Frame &frame) {
             apply_ship_update_location(su);
         }
     }
-    for (int i = 0; i < frame.update_size(); i++) {
-        const ShipUpdate &su = frame.update(i);
-        if (!su.has_ship_id()) {
-            return;
-        }
-        NetworkShipId ship_id = NetworkShipId::from_net(su.ship_id());
-        for (int i = 0; i < su.fire_size(); i++) {
-            fireEvents.push_back(std::make_pair(ship_id, su.fire(i)));
-        }
-        for (int i = 0; i < su.damage_size(); i++) {
-            damageEvents.push_back(std::make_pair(ship_id, su.damage(i)));
+    if (!server) {
+        for (int i = 0; i < frame.event_size(); i++) {
+            const Event &ev = frame.event(i);
+            queuedEvents.push_back(ev);
         }
     }
     /*
@@ -766,12 +769,19 @@ void apply_frame(const Frame &frame) {
         }
     }
     */
-    if (!fireEvents.empty()) {
-        apply_weapon_fire(fireEvents.front().second, fireEvents.front().first);
-        fireEvents.pop_front();
-    } else if (!damageEvents.empty()) {
-        apply_damage(damageEvents.front().second, damageEvents.front().first);
-        damageEvents.pop_front();
+    if (!queuedEvents.empty()) {
+        const Event & ev = queuedEvents.front();
+        if (ev.has_fire()) {
+            apply_weapon_fire(ev.fire());
+        }
+        if (ev.has_damage()) {
+            apply_damage(ev.damage());
+        }
+        if (ev.has_spawn()) {
+        }
+        if (ev.has_despawn()) {
+        }
+        queuedEvents.pop_front();
     }
 }
 
@@ -907,9 +917,10 @@ void damage_hook() {
     bool shouldSim = false;
     if (should_simulate_damage(src, dst)) {
         shouldSim = true;
-        ShipUpdate &update = get_update(pendingState.frame(), dst);
-        Damage *damage = update.add_damage();
-        damage->set_src(src.to_net());
+        Event *ev = pendingState.frame().add_event();
+        Damage *damage = ev->mutable_damage();
+        damage->set_ship_id(dst.to_net());
+        damage->set_shooter(src.to_net());
         damage->set_quantity(quantity);
         vec = damage->mutable_pos();
         damage->set_seed(randomSeed);
@@ -919,8 +930,6 @@ void damage_hook() {
             shouldSim ? "[simulated]" : "[ignored]",
             src.to_net(), src.to_local(), dst.to_net(), dst.to_local(), quantity, vec->x(), vec->y(), vec->z(), randomSeed);
 
-    // return -- do not apply damage
-    reg_eip = 0x0d44; //ovr143
 }
 
 void fire_hook() {
@@ -930,16 +939,15 @@ void fire_hook() {
     bool shouldSim = false;
     if (should_simulate_fire(src)) {
         shouldSim = true;
-        ShipUpdate &update = get_update(pendingState.frame(), src);
-        WeaponFire *fire = update.add_fire();
+        Event *ev = pendingState.frame().add_event();
+        WeaponFire *fire = ev->mutable_fire();
+        fire->set_shooter(src.to_net());
         fire->set_gun_id(gun_id);
     }
-    fprintf(stderr, "\r\ndoFire%s(%d, %d)\r\n",
-            shouldSim ? "[simulated]" : "[ignored]",
+    fprintf(stderr, "\r\ndoFire%s%s(%d, %d)\r\n",
+            shouldSim ? "[added-to-pending-frame]" : "[not-sent]",
+            reg_eip == 0x0d44 ? " SKIPPING EVENT" : " HANDLING EVENT",
             src.to_net(), gun_id);
-
-    // return -- do not apply damage
-    reg_eip = 0x0d44; //ovr143
 }
 
 void spawn_ship_hook() {
@@ -952,29 +960,47 @@ void despawn_ship_hook() {
     // return -- do not apply damage
     reg_eip = 0x1ce0; // ovr140 retf
 }
-
 void process_fire() {
     // beginning of doDamage.
     if (manualDoFire) {
-        manualDoFire --;
-    } else {
+        // return -- do not apply damage
+        reg_eip = 0x0d44; //ovr143
+    }
+    if (manualDoFire <= 0) { 
         fire_hook();
+    }  else {
+        NetworkShipId src = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
+        Bit16u gun_id = mem_readw(DS_OFF + reg_esp + 6);
+        fprintf(stderr, "\r\ndoFire manual=%d %s(%d, %d)\r\n",
+            manualDoFire,
+                reg_eip == 0x0d44 ? " SKIPPING EVENT" : " HANDLING EVENT",
+            src.to_net(), gun_id);
+    }
+    if (manualDoFire > 0) {
+        manualDoFire--;
     }
 }
 
 void process_damage() {
     // beginning of doDamage.
     if (manualDoDamage) {
-        manualDoDamage --;
-    } else {
+        // return -- do not apply damage
+        reg_eip = 0x0d44; //ovr143
+    }
+    if (manualDoDamage <= 0) {
         damage_hook();
+    }
+    if (manualDoDamage > 0) {
+        manualDoDamage--;
     }
 }
 
 void process_spawn_ship() {
     // beginning of doDamage.
     if (manualSpawnShip) {
-        manualSpawnShip --;
+        if (manualSpawnShip > 0) {
+            manualSpawnShip--;
+        }
     } else {
         spawn_ship_hook();
     }
@@ -983,10 +1009,12 @@ void process_spawn_ship() {
 void process_despawn_ship() {
     // beginning of doDamage.
     NetworkShipId ship = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
-    fprintf(stderr,"despawn %d\n", ship.to_net());
+    //fprintf(stderr,"despawn %d\n", ship.to_net());
 
-    if (manualSpawnShip) {
-        manualSpawnShip --;
+    if (manualDespawnShip) {
+        if (manualDespawnShip > 0) {
+            manualDespawnShip--;
+        }
     } else {
         despawn_ship_hook();
     }
