@@ -730,7 +730,7 @@ void apply_frame(const Frame &frame) {
             continue;
         }
         NetworkShipId ship_id = NetworkShipId::from_net(su.ship_id());
-        if (ship_id.to_local() >= 16) {
+        if (ship_id.to_local() >= 12) {
             continue; // Do not simulate ephemeral objects.
         }
         if ((client && !client->is_authoritative(ship_id)) || (server && ship_id.to_local() != 0)) {
@@ -962,7 +962,8 @@ void despawn_ship_hook() {
 }
 void process_fire() {
     // beginning of doDamage.
-    if (manualDoFire) {
+    if (manualDoFire == 0) {
+        // if we go in here, dosbox will return and NOT EXECUTE the fire.
         // return -- do not apply damage
         reg_eip = 0x0d44; //ovr143
     }
@@ -983,8 +984,8 @@ void process_fire() {
 
 void process_damage() {
     // beginning of doDamage.
-    if (manualDoDamage) {
-        // return -- do not apply damage
+    if (manualDoDamage == 0) {
+        // if we go in here, dosbox will return and NOT EXECUTE the damage.
         reg_eip = 0x0d44; //ovr143
     }
     if (manualDoDamage <= 0) {
