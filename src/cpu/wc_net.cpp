@@ -13,6 +13,7 @@
 #include "cpu.h"
 #include "paging.h"
 #include <vector>
+#include <deque>
 #include <sstream>
 #include "wc_net.h"
 #include "../wc.pb.h"
@@ -263,6 +264,9 @@ bool is_client_authoritative(NetworkShipId sender, NetworkShipId id) {
     return sender == id;
 }
 
+std::deque<Event> queuedEvents;
+Event gCurrentEvent;
+
 bool isServer = (getenv("WCHOST") == NULL);
 int manualDoDamage = isServer ? -1 : 0;
 int manualDoFire = isServer ? -1 : 0;
@@ -270,6 +274,7 @@ int manualSpawnShip = -1;
 int manualDespawnShip = -1;
 int gFrameNum = 0;
 bool gIgnoreNextProcessNetwork = false;
+bool gIsProcessingTrampoline = false;
 
 /*void setSimulating(bool sim) {
     manualDoDamage = (int)sim;
@@ -502,6 +507,7 @@ const Bit8u trampoline_code[6] = {
 
 const int DS = 0x13d3;
 const int DS_OFF = DS * 0x10;
+const Bit8u Instr_RETF = 0xCB;
 enum DataSegValues {
     DS_Pos = 0xA9C2,
     DS_Vel = 0xCAE2,
@@ -513,7 +519,8 @@ enum DataSegValues {
     DS_error_has_occurred = 0x0395,
     shellcode_start = DS_error_has_occurred, // 249 bytes
     DS_tmpvector = DS_loading_wing_commander, // 100 bytes
-    DS_trampoline = DS_loading_wing_commander + 100, // 7 bytes
+    DS_tramp_lite = DS_loading_wing_commander + 100, // 1 byte
+    DS_trampoline = DS_loading_wing_commander + 101, // 6 bytes
     DS_tramp_ret_NOP = DS_trampoline + 2, // NOP instruction we hook into
     //DS_tmpvector = DS_Pos + (12 * 0x3f)
     DS_entity_types = 0xBD1A
@@ -640,6 +647,7 @@ void apply_damage(const Damage &dam) {
             //0x9C, //PUSHF
             //push all regs, xor si,si, push si
             //0x60, //PUSHA
+            0x56, // push si (original value)
             0xbe, arg_6 & 0xff, arg_6 >> 8,
             0x56, // push si
             0xbe, arg_4 & 0xff, arg_4 >> 8,
@@ -652,6 +660,8 @@ void apply_damage(const Damage &dam) {
             0x9A, 0x84, 0x00, 0xd7, 0x12,
             // pop si (4 times)
             0x5E, 0x5E, 0x5E, 0x5E,
+            // pop si (original value)
+            0x5E,
             //0x61, 0x9D, // pop all regs, pop flags
             0xCB // retf
         };
@@ -689,14 +699,15 @@ void apply_weapon_fire(const WeaponFire &fire) {
             //0x9C, //PUSHF
             //push all regs, xor si,si, push si
             //0x60, //PUSHA
+            0x56, // push si (original value)
             0xbe, gun_id & 0xff, gun_id >> 8,// mov si <-- gun_id
             0x56, // push si
             0xbe, ship_id & 0xff, ship_id >> 8, // mov si <- ship_id
             0x56, // push si
             // call far 12d7:012E
             0x9A, 0x2E, 0x01, 0xd7, 0x12,
-            // pop si, pop si
-            0x5E, 0x5E,
+            // pop si, pop si, pop si
+            0x5E, 0x5E, 0x5E,
             //0x61, 0x9D, // pop all regs, pop flags
             0xCB // retf
         };
@@ -712,10 +723,6 @@ void apply_weapon_fire(const WeaponFire &fire) {
         fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
     }
 }
-
-#include <deque>
-std::deque<Event> queuedEvents;
-Event gCurrentEvent;
 
 void merge_pending_frame(RemoteClient *sender, const Frame &frame) {
     for (int i = 0; i < frame.update_size(); i++) {
@@ -749,7 +756,7 @@ void apply_frame(const Frame &frame) {
             continue;
         }
         NetworkShipId ship_id = NetworkShipId::from_net(su.ship_id());
-        if (ship_id.to_local() >= 12) {
+        if (ship_id.to_local() >= 10) {
             continue; // Do not simulate ephemeral objects.
         }
         if ((client && !client->is_authoritative(ship_id)) || (server && ship_id.to_local() != 0)) {
@@ -919,7 +926,7 @@ void process_network() {
         mem_writeb_checked(DS_OFF + DS_trampoline + i, trampoline_code[i]);
     }    
 
-    fprintf(stderr, "Jumping to trampoline\n");
+    //fprintf(stderr, "Jumping to trampoline\n");
     CPU_Push16((Bit16u)SegValue(cs));
     CPU_Push16((Bit16u)reg_eip);
     SegSet16(cs, DS);
@@ -954,17 +961,24 @@ void damage_hook() {
 
 }
 
+void build_fire_event(Event *ev) {
+    NetworkShipId src = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
+    Bit16u gun_id = mem_readw(DS_OFF + reg_esp + 6);
+    //Bit32u randomSeed = mem_readd(DS_OFF + DS_RandomSeed);
+    WeaponFire *fire = ev->mutable_fire();
+    fire->set_shooter(src.to_net());
+    fire->set_gun_id(gun_id);
+}
+
 void fire_hook() {
     NetworkShipId src = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
     Bit16u gun_id = mem_readw(DS_OFF + reg_esp + 6);
     //Bit32u randomSeed = mem_readd(DS_OFF + DS_RandomSeed);
     bool shouldSim = false;
     if (should_simulate_fire(src)) {
-        shouldSim = true;
         Event *ev = pendingState.frame().add_event();
-        WeaponFire *fire = ev->mutable_fire();
-        fire->set_shooter(src.to_net());
-        fire->set_gun_id(gun_id);
+        build_fire_event(ev);
+        shouldSim = true;
     }
     fprintf(stderr, "\r\ndoFire%s%s(%d, %d)\r\n",
             shouldSim ? "[added-to-pending-frame]" : "[not-sent]",
@@ -1006,8 +1020,20 @@ void process_fire() {
         // if we go in here, dosbox will return and NOT EXECUTE the fire.
         // return -- do not apply damage
         reg_eip = 0x0d44; //ovr143
+    } else {
+        if (!gIsProcessingTrampoline) {
+            // isServer
+            fprintf(stderr, "gIsProcessingTrampoline %d\n", manualDoFire);
+            queuedEvents.push_back(Event());
+            build_fire_event(&queuedEvents.back());
+            mem_writeb_checked(DS_OFF + DS_tramp_lite, Instr_RETF);
+            SegSet16(cs, DS);
+            reg_eip = DS_tramp_lite;
+        } else {
+            fprintf(stderr, "gIsProcessingTrampoline is true %d\n", manualDoFire);
+        }
     }
-    if (manualDoFire <= 0) { 
+    if (manualDoFire <= 0 && !gIsProcessingTrampoline) { 
         fire_hook();
     }  else {
         NetworkShipId src = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
@@ -1062,11 +1088,13 @@ void process_despawn_ship() {
 }
 
 void process_trampoline() {
+    fprintf(stderr, "Trampoline: start %d\n", (int)queuedEvents.size());
+    gIsProcessingTrampoline = true;
     {
         const Event &ev = gCurrentEvent;
         if (ev.has_fire()) {
             // We just finished applying weapon fire.
-            //fprintf(stderr, "Trampoline: finished fire\n");
+            fprintf(stderr, "Trampoline: finished fire\n");
         } else if (ev.has_damage()) {
             // We just finished dealing damage.
             //fprintf(stderr, "Trampoline: finished damage\n");
@@ -1077,7 +1105,7 @@ void process_trampoline() {
             // Finished despawning
             //fprintf(stderr, "Trampoline: finished despawn\n");
         } else {
-            //fprintf(stderr, "Trampoline: no events yet\n");
+            fprintf(stderr, "Trampoline: no events finished yet\n");
         }
     }
 
@@ -1088,7 +1116,7 @@ void process_trampoline() {
         const Event &ev = gCurrentEvent;
         
         if (ev.has_fire()) {
-            //fprintf(stderr, "Trampoline: starting fire\n");
+            fprintf(stderr, "Trampoline: starting fire\n");
             apply_weapon_fire(ev.fire());
         }
         if (ev.has_damage()) {
@@ -1104,7 +1132,7 @@ void process_trampoline() {
             // TODO
         }
         if (reg_eip != DS_tramp_ret_NOP) {
-            //fprintf(stderr, "Trampoline: Starting next bounce\n");
+            fprintf(stderr, "Trampoline: Starting next bounce\n");
             // The processor has been sent out on an away mission.
             // we will get back to process_trampoline after the current
             // function has executed.
@@ -1115,7 +1143,8 @@ void process_trampoline() {
     gCurrentEvent.Clear();
 
     // Now anything else to execute after processing all events this frame
-    //fprintf(stderr, "Finished processing events for frame %d\n", gFrameNum);
+    fprintf(stderr, "Finished processing events for frame %d\n", gFrameNum);
+    gIsProcessingTrampoline = false;
 }
 
 bool isExecutingFunction(Bit16u stubSeg, Bit16u stubOff) {
@@ -1161,10 +1190,15 @@ void wc_net_check_cpu_hooks() {
     }
     if (isExecutingFunction(STUB140, 0x0101)) {
         // allocate anon entity
-        reg_eax = 12;
-        reg_eip = 0x1ce0; // ovr140 retf
+        /*
+         reg_eax = 12; // force ephemeral objects to a specific slot
+         reg_eip = 0x1ce0; // ovr140 retf
+        */
     }
     if (SegValue(cs) == DS && reg_eip == DS_tramp_ret_NOP) {
+        process_trampoline();
+    }
+    if (SegValue(cs) == DS && reg_eip == DS_tramp_lite) {
         process_trampoline();
     }
     if (SegValue(cs) == 0x0560 && reg_eip == 0x20e3) {
