@@ -268,6 +268,8 @@ int manualDoDamage = isServer ? -1 : 0;
 int manualDoFire = isServer ? -1 : 0;
 int manualSpawnShip = -1;
 int manualDespawnShip = -1;
+int gFrameNum = 0;
+bool gIgnoreNextProcessNetwork = false;
 
 /*void setSimulating(bool sim) {
     manualDoDamage = (int)sim;
@@ -489,6 +491,15 @@ RecvStatus send_msg(int sock, const NetworkMessage &msg) {
     return RecvStatus::OK();
 }
 
+const Bit8u trampoline_code[6] = {
+            0x9C, //PUSHF
+            0x60, //PUSHA
+            0x90, //NOP <-- We hook into this instruction.
+            0x61, //POPA
+            0x9D, //POPF
+            0xCB //RETF
+};
+
 const int DS = 0x13d3;
 const int DS_OFF = DS * 0x10;
 enum DataSegValues {
@@ -501,8 +512,11 @@ enum DataSegValues {
     DS_loading_wing_commander = 0x0187,
     DS_error_has_occurred = 0x0395,
     shellcode_start = DS_error_has_occurred, // 249 bytes
-    DS_tmpvector = DS_loading_wing_commander // 107 bytes
+    DS_tmpvector = DS_loading_wing_commander, // 100 bytes
+    DS_trampoline = DS_loading_wing_commander + 100, // 7 bytes
+    DS_tramp_ret_NOP = DS_trampoline + 2, // NOP instruction we hook into
     //DS_tmpvector = DS_Pos + (12 * 0x3f)
+    DS_entity_types = 0xBD1A
 };
 
 template <class VectorClass>
@@ -623,9 +637,9 @@ void apply_damage(const Damage &dam) {
         Bit8u shellcode[] = {
             0x00, // nul terminate string
             // push flags,
-            0x9C, //PUSHF
+            //0x9C, //PUSHF
             //push all regs, xor si,si, push si
-            0x60, //PUSHA
+            //0x60, //PUSHA
             0xbe, arg_6 & 0xff, arg_6 >> 8,
             0x56, // push si
             0xbe, arg_4 & 0xff, arg_4 >> 8,
@@ -636,8 +650,10 @@ void apply_damage(const Damage &dam) {
             0x56, // push si
             // call far 12d7:012E
             0x9A, 0x84, 0x00, 0xd7, 0x12,
-            // pop si, pop si, pop all regs, pop flags, retf
-            0x5E, 0x5E, 0x5E, 0x5E, 0x61, 0x9D, 0xCB
+            // pop si (4 times)
+            0x5E, 0x5E, 0x5E, 0x5E,
+            //0x61, 0x9D, // pop all regs, pop flags
+            0xCB // retf
         };
         for (int i = 0; i < sizeof(shellcode); i++) {
             mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
@@ -670,17 +686,19 @@ void apply_weapon_fire(const WeaponFire &fire) {
         Bit8u shellcode[] = {
             0x00, // nul terminate string
             // push flags,
-            0x9C, //PUSHF
+            //0x9C, //PUSHF
             //push all regs, xor si,si, push si
-            0x60, //PUSHA
+            //0x60, //PUSHA
             0xbe, gun_id & 0xff, gun_id >> 8,// mov si <-- gun_id
             0x56, // push si
             0xbe, ship_id & 0xff, ship_id >> 8, // mov si <- ship_id
             0x56, // push si
             // call far 12d7:012E
             0x9A, 0x2E, 0x01, 0xd7, 0x12,
-            // pop si, pop si, pop all regs, pop flags, retf
-            0x5E, 0x5E, 0x61, 0x9D, 0xCB
+            // pop si, pop si
+            0x5E, 0x5E,
+            //0x61, 0x9D, // pop all regs, pop flags
+            0xCB // retf
         };
         for (int i = 0; i < sizeof(shellcode); i++) {
             mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
@@ -697,6 +715,7 @@ void apply_weapon_fire(const WeaponFire &fire) {
 
 #include <deque>
 std::deque<Event> queuedEvents;
+Event gCurrentEvent;
 
 void merge_pending_frame(RemoteClient *sender, const Frame &frame) {
     for (int i = 0; i < frame.update_size(); i++) {
@@ -769,20 +788,6 @@ void apply_frame(const Frame &frame) {
         }
     }
     */
-    if (!queuedEvents.empty()) {
-        const Event & ev = queuedEvents.front();
-        if (ev.has_fire()) {
-            apply_weapon_fire(ev.fire());
-        }
-        if (ev.has_damage()) {
-            apply_damage(ev.damage());
-        }
-        if (ev.has_spawn()) {
-        }
-        if (ev.has_despawn()) {
-        }
-        queuedEvents.pop_front();
-    }
 }
 
 void apply_starting_frame(const Frame &frame) {
@@ -796,6 +801,12 @@ void apply_starting_frame(const Frame &frame) {
 }
 
 void process_network() {
+    for (int i = 0; i <= 0x3f; i++) {
+        fprintf(stderr, "%02x ", mem_readw(DS_OFF + DS_entity_types + i * 2));
+    }
+    fprintf(stderr, "\n");
+    gFrameNum++;
+    //fprintf(stderr, "Start process_network for frame %d\n", gFrameNum);
     static NetworkMessage networkMessage;
     networkMessage.Clear();
     if (!client && !server) {
@@ -904,6 +915,17 @@ void process_network() {
         }
         apply_frame(networkMessage.frame());
     }
+    for (int i = 0; i < sizeof(trampoline_code); i++) {
+        mem_writeb_checked(DS_OFF + DS_trampoline + i, trampoline_code[i]);
+    }    
+
+    fprintf(stderr, "Jumping to trampoline\n");
+    CPU_Push16((Bit16u)SegValue(cs));
+    CPU_Push16((Bit16u)reg_eip);
+    SegSet16(cs, DS);
+    reg_eip = DS_trampoline;
+    // After trampoline, we will return to the start of process_network.
+    gIgnoreNextProcessNetwork = true;
 }
 
 void damage_hook() {
@@ -949,6 +971,24 @@ void fire_hook() {
             reg_eip == 0x0d44 ? " SKIPPING EVENT" : " HANDLING EVENT",
             src.to_net(), gun_id);
 }
+
+/*
+Entity types:
+
+0 - unallocated
+2 - ??? high ids / always exist. maybe nav map point?
+3 - nav point icon
+4 - space dust
+5 - explosion
+6 - sparkle (damage)
+7 - engine sprite
+8 - bolt
+9 - asteroid
+a - mine
+b - missile
+c - ship
+d - capship
+ */
 
 void spawn_ship_hook() {
     // return -- do not apply damage
@@ -1018,5 +1058,123 @@ void process_despawn_ship() {
         }
     } else {
         despawn_ship_hook();
+    }
+}
+
+void process_trampoline() {
+    {
+        const Event &ev = gCurrentEvent;
+        if (ev.has_fire()) {
+            // We just finished applying weapon fire.
+            //fprintf(stderr, "Trampoline: finished fire\n");
+        } else if (ev.has_damage()) {
+            // We just finished dealing damage.
+            //fprintf(stderr, "Trampoline: finished damage\n");
+        } else if (ev.has_spawn()) {
+            // Finished spawning
+            //fprintf(stderr, "Trampoline: finished spawn\n");
+        } else if (ev.has_despawn()) {
+            // Finished despawning
+            //fprintf(stderr, "Trampoline: finished despawn\n");
+        } else {
+            //fprintf(stderr, "Trampoline: no events yet\n");
+        }
+    }
+
+    while (!queuedEvents.empty()) {
+        gCurrentEvent = queuedEvents.front();
+        queuedEvents.pop_front();
+
+        const Event &ev = gCurrentEvent;
+        
+        if (ev.has_fire()) {
+            //fprintf(stderr, "Trampoline: starting fire\n");
+            apply_weapon_fire(ev.fire());
+        }
+        if (ev.has_damage()) {
+            //fprintf(stderr, "Trampoline: starting damage\n");
+            apply_damage(ev.damage());
+        }
+        if (ev.has_spawn()) {
+            //fprintf(stderr, "Trampoline: TODO spawn!!!!!!\n");
+            // TODO
+        }
+        if (ev.has_despawn()) {
+            //fprintf(stderr, "Trampoline: TODO despawn!!!!!!!\n");
+            // TODO
+        }
+        if (reg_eip != DS_tramp_ret_NOP) {
+            //fprintf(stderr, "Trampoline: Starting next bounce\n");
+            // The processor has been sent out on an away mission.
+            // we will get back to process_trampoline after the current
+            // function has executed.
+            return;
+        }
+    }
+    // We have finished executing all events.
+    gCurrentEvent.Clear();
+
+    // Now anything else to execute after processing all events this frame
+    //fprintf(stderr, "Finished processing events for frame %d\n", gFrameNum);
+}
+
+bool isExecutingFunction(Bit16u stubSeg, Bit16u stubOff) {
+    Bit8u instType = mem_readb(stubSeg * 0x10 + stubOff);
+    if (instType != 0xea) {
+        return false;
+    }
+    Bit16u realOff = mem_readw(stubSeg * 0x10 + stubOff + 1);
+    Bit16u realSeg = mem_readw(stubSeg * 0x10 + stubOff + 3);
+    if (SegValue(cs) == realSeg && reg_eip == realOff) {
+        return true;
+    }
+    return false;
+}
+
+enum {
+    STUB140 = 0x12ad,
+    STUB141 = 0x12cc,
+    STUB142 = 0x12d4,
+    STUB143 = 0x12d7,
+    STUB144 = 0x12ed,
+    STUB145 = 0x12f2,
+    STUB146 = 0x12fe,
+    STUB147 = 0x130e
+};
+
+void wc_net_check_cpu_hooks() {
+    // do_damage
+    if (isExecutingFunction(STUB143, 0x0084)) {
+        process_damage();
+    }
+    // fireGunFromShip
+    if (isExecutingFunction(STUB143, 0x012e)) {
+        process_fire();
+    }
+    // outerSpawnShipEntity
+    if (isExecutingFunction(STUB145, 0x00b6)) {
+        process_spawn_ship();
+    }
+    // despawn
+    if (isExecutingFunction(STUB140, 0x01dd)) {
+        process_despawn_ship();
+    }
+    if (isExecutingFunction(STUB140, 0x0101)) {
+        // allocate anon entity
+        reg_eax = 12;
+        reg_eip = 0x1ce0; // ovr140 retf
+    }
+    if (SegValue(cs) == DS && reg_eip == DS_tramp_ret_NOP) {
+        process_trampoline();
+    }
+    if (SegValue(cs) == 0x0560 && reg_eip == 0x20e3) {
+        // this is the beginning of the WC main loop while in fighting.
+        // then we can process network commands here and introduce things
+        // before the frame is processed in a predictable place
+        if (gIgnoreNextProcessNetwork) {
+            gIgnoreNextProcessNetwork = false;
+        } else {
+            process_network();
+        }
     }
 }

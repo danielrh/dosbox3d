@@ -1,6 +1,8 @@
 #ifndef WC_NET_H_
 #define WC_NET_H_
 
+void wc_net_check_cpu_hooks();
+
 void process_network();
 void process_damage();
 void process_fire();
