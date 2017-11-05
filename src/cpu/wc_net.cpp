@@ -250,14 +250,6 @@ bool should_simulate_damage(NetworkShipId src, NetworkShipId dst) {
 }
 
 bool should_simulate_fire(NetworkShipId src) {
-    if (client) {
-        return src == client->shipId;
-    }
-    if (server) {
-        return server->get_client(src) == NULL;
-    }
-    fprintf(stderr, "Not client or server\n");
-    return false;
 }
 
 bool is_client_authoritative(NetworkShipId sender, NetworkShipId id) {
@@ -268,19 +260,11 @@ std::deque<Event> queuedEvents;
 Event gCurrentEvent;
 
 bool isServer = (getenv("WCHOST") == NULL);
-int manualDoDamage = isServer ? -1 : 0;
-int manualDoFire = isServer ? -1 : 0;
 int manualSpawnShip = -1;
 int manualDespawnShip = -1;
 int gFrameNum = 0;
 bool gIgnoreNextProcessNetwork = false;
 bool gIsProcessingTrampoline = false;
-
-/*void setSimulating(bool sim) {
-    manualDoDamage = (int)sim;
-    manualDoFire = (int)sim;
-    manualSpawnShip = -1; //(int)sim;
-}*/
 
 int fire_fifo = open("/tmp/fire.fifo", O_RDONLY|O_NONBLOCK);
 FILE *memlog = fopen("/tmp/mem.txt", "a");
@@ -668,10 +652,6 @@ void apply_damage(const Damage &dam) {
         for (int i = 0; i < sizeof(shellcode); i++) {
             mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
         }
-        if (manualDoDamage >= 0) {
-            manualDoDamage ++;
-        }
-        assert(manualDoDamage == 1 || manualDoDamage == -1);
         SegSet16(cs, DS);
         reg_eip = shellcode_start + 1;
         fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
@@ -714,10 +694,6 @@ void apply_weapon_fire(const WeaponFire &fire) {
         for (int i = 0; i < sizeof(shellcode); i++) {
             mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
         }
-        if (manualDoFire >= 0) {
-            manualDoFire ++;
-        }
-        assert(manualDoFire == 1 || manualDoFire == -1);
         SegSet16(cs, DS);
         reg_eip = shellcode_start + 1;
         fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
@@ -924,7 +900,7 @@ void process_network() {
     }
     for (int i = 0; i < sizeof(trampoline_code); i++) {
         mem_writeb_checked(DS_OFF + DS_trampoline + i, trampoline_code[i]);
-    }    
+    }
 
     //fprintf(stderr, "Jumping to trampoline\n");
     CPU_Push16((Bit16u)SegValue(cs));
@@ -935,56 +911,90 @@ void process_network() {
     gIgnoreNextProcessNetwork = true;
 }
 
-void damage_hook() {
-    NetworkShipId src = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
-    NetworkShipId dst = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 6);
-    Bit16u quantity = mem_readw(DS_OFF + reg_esp + 8);
-    Bit16u vectorAddr = mem_readw(DS_OFF + reg_esp + 10);
-    Bit32u randomSeed = mem_readd(DS_OFF + DS_RandomSeed);
-    Vector localVec;
-    Vector *vec = &localVec;
-    bool shouldSim = false;
-    if (should_simulate_damage(src, dst)) {
-        shouldSim = true;
-        Event *ev = pendingState.frame().add_event();
+template <class EventBuilder>
+void process_intercepted_event(EventBuilder builder) {
+    //void(*build_event)(Event*), Bit16u retfAddr) {
+    if (!gIsProcessingTrampoline) {
+        if (isServer) {
+            queuedEvents.push_back(Event());
+            builder.build_event(&queuedEvents.back());
+            mem_writeb_checked(DS_OFF + DS_tramp_lite, Instr_RETF);
+            SegSet16(cs, DS);
+            reg_eip = DS_tramp_lite;
+        } else {
+            // if we go in here, dosbox will return and NOT EXECUTE the fire.
+            // return -- do not apply damage
+            reg_eip = builder.ret_addr(); //ovr143
+        }
+    }
+    if (!gIsProcessingTrampoline) {
+        if (builder.should_simulate()) {
+            Event *ev = pendingState.frame().add_event();
+            builder.build_event(ev);
+        }
+    }
+}
+
+class FireEventBuilder {
+public:
+    void build_event(Event *ev) {
+        NetworkShipId src = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
+        Bit16u gun_id = mem_readw(DS_OFF + reg_esp + 6);
+        //Bit32u randomSeed = mem_readd(DS_OFF + DS_RandomSeed);
+        WeaponFire *fire = ev->mutable_fire();
+        fire->set_shooter(src.to_net());
+        fire->set_gun_id(gun_id);
+    }
+
+    bool should_simulate() {
+        NetworkShipId src = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
+        if (server) {
+            return server->get_client(src) == NULL;
+        } else if (client) {
+            return src == client->shipId;
+        }
+        return false;
+    }
+
+    Bit16u ret_addr() {
+        return 0x0d44;
+    }
+
+    void debug(Event *ev) {
+        /*
+        fprintf(stderr, "\r\ndoDamage%s(%d->%d, %d->%d, %d, <%d, %d, %d>) rng=%x\r\n",
+                shouldSim ? "[added-to-pending-frame]" : "[not-sent]",
+                NetworkShipId::from_net(src).to_net(), src.to_local(), dst.to_net(), dst.to_local(),
+                quantity, vec->x(), vec->y(), vec->z(), randomSeed);
+        */
+    }
+};
+
+class DamageEventBuilder {
+public:
+    void build_event(Event *ev) {
+        NetworkShipId src = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
+        NetworkShipId dst = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 6);
+        Bit16u quantity = mem_readw(DS_OFF + reg_esp + 8);
+        Bit16u vectorAddr = mem_readw(DS_OFF + reg_esp + 10);
+        Bit32u randomSeed = mem_readd(DS_OFF + DS_RandomSeed);
         Damage *damage = ev->mutable_damage();
         damage->set_ship_id(dst.to_net());
         damage->set_shooter(src.to_net());
         damage->set_quantity(quantity);
-        vec = damage->mutable_pos();
+        Vector *vec = damage->mutable_pos();
+        populate_vector(vec, vectorAddr);
         damage->set_seed(randomSeed);
     }
-    populate_vector(vec, vectorAddr);
-    fprintf(stderr, "\r\ndoDamage%s(%d->%d, %d->%d, %d, <%d, %d, %d>) rng=%x\r\n",
-            shouldSim ? "[simulated]" : "[ignored]",
-            src.to_net(), src.to_local(), dst.to_net(), dst.to_local(), quantity, vec->x(), vec->y(), vec->z(), randomSeed);
 
-}
-
-void build_fire_event(Event *ev) {
-    NetworkShipId src = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
-    Bit16u gun_id = mem_readw(DS_OFF + reg_esp + 6);
-    //Bit32u randomSeed = mem_readd(DS_OFF + DS_RandomSeed);
-    WeaponFire *fire = ev->mutable_fire();
-    fire->set_shooter(src.to_net());
-    fire->set_gun_id(gun_id);
-}
-
-void fire_hook() {
-    NetworkShipId src = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
-    Bit16u gun_id = mem_readw(DS_OFF + reg_esp + 6);
-    //Bit32u randomSeed = mem_readd(DS_OFF + DS_RandomSeed);
-    bool shouldSim = false;
-    if (should_simulate_fire(src)) {
-        Event *ev = pendingState.frame().add_event();
-        build_fire_event(ev);
-        shouldSim = true;
+    bool should_simulate() {
+        return isServer;
     }
-    fprintf(stderr, "\r\ndoFire%s%s(%d, %d)\r\n",
-            shouldSim ? "[added-to-pending-frame]" : "[not-sent]",
-            reg_eip == 0x0d44 ? " SKIPPING EVENT" : " HANDLING EVENT",
-            src.to_net(), gun_id);
-}
+
+    Bit16u ret_addr() {
+        return 0x0d44;
+    }
+};
 
 /*
 Entity types:
@@ -1013,53 +1023,6 @@ void spawn_ship_hook() {
 void despawn_ship_hook() {
     // return -- do not apply damage
     reg_eip = 0x1ce0; // ovr140 retf
-}
-void process_fire() {
-    // beginning of doDamage.
-    if (manualDoFire == 0) {
-        // if we go in here, dosbox will return and NOT EXECUTE the fire.
-        // return -- do not apply damage
-        reg_eip = 0x0d44; //ovr143
-    } else {
-        if (!gIsProcessingTrampoline) {
-            // isServer
-            fprintf(stderr, "gIsProcessingTrampoline %d\n", manualDoFire);
-            queuedEvents.push_back(Event());
-            build_fire_event(&queuedEvents.back());
-            mem_writeb_checked(DS_OFF + DS_tramp_lite, Instr_RETF);
-            SegSet16(cs, DS);
-            reg_eip = DS_tramp_lite;
-        } else {
-            fprintf(stderr, "gIsProcessingTrampoline is true %d\n", manualDoFire);
-        }
-    }
-    if (manualDoFire <= 0 && !gIsProcessingTrampoline) { 
-        fire_hook();
-    }  else {
-        NetworkShipId src = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
-        Bit16u gun_id = mem_readw(DS_OFF + reg_esp + 6);
-        fprintf(stderr, "\r\ndoFire manual=%d %s(%d, %d)\r\n",
-            manualDoFire,
-                reg_eip == 0x0d44 ? " SKIPPING EVENT" : " HANDLING EVENT",
-            src.to_net(), gun_id);
-    }
-    if (manualDoFire > 0) {
-        manualDoFire--;
-    }
-}
-
-void process_damage() {
-    // beginning of doDamage.
-    if (manualDoDamage == 0) {
-        // if we go in here, dosbox will return and NOT EXECUTE the damage.
-        reg_eip = 0x0d44; //ovr143
-    }
-    if (manualDoDamage <= 0) {
-        damage_hook();
-    }
-    if (manualDoDamage > 0) {
-        manualDoDamage--;
-    }
 }
 
 void process_spawn_ship() {
@@ -1097,13 +1060,13 @@ void process_trampoline() {
             fprintf(stderr, "Trampoline: finished fire\n");
         } else if (ev.has_damage()) {
             // We just finished dealing damage.
-            //fprintf(stderr, "Trampoline: finished damage\n");
+            fprintf(stderr, "Trampoline: finished damage\n");
         } else if (ev.has_spawn()) {
             // Finished spawning
-            //fprintf(stderr, "Trampoline: finished spawn\n");
+            fprintf(stderr, "Trampoline: finished spawn\n");
         } else if (ev.has_despawn()) {
             // Finished despawning
-            //fprintf(stderr, "Trampoline: finished despawn\n");
+            fprintf(stderr, "Trampoline: finished despawn\n");
         } else {
             fprintf(stderr, "Trampoline: no events finished yet\n");
         }
@@ -1120,15 +1083,15 @@ void process_trampoline() {
             apply_weapon_fire(ev.fire());
         }
         if (ev.has_damage()) {
-            //fprintf(stderr, "Trampoline: starting damage\n");
+            fprintf(stderr, "Trampoline: starting damage\n");
             apply_damage(ev.damage());
         }
         if (ev.has_spawn()) {
-            //fprintf(stderr, "Trampoline: TODO spawn!!!!!!\n");
+            fprintf(stderr, "Trampoline: TODO spawn!!!!!!\n");
             // TODO
         }
         if (ev.has_despawn()) {
-            //fprintf(stderr, "Trampoline: TODO despawn!!!!!!!\n");
+            fprintf(stderr, "Trampoline: TODO despawn!!!!!!!\n");
             // TODO
         }
         if (reg_eip != DS_tramp_ret_NOP) {
@@ -1174,11 +1137,11 @@ enum {
 void wc_net_check_cpu_hooks() {
     // do_damage
     if (isExecutingFunction(STUB143, 0x0084)) {
-        process_damage();
+        process_intercepted_event(DamageEventBuilder());
     }
     // fireGunFromShip
     if (isExecutingFunction(STUB143, 0x012e)) {
-        process_fire();
+        process_intercepted_event(FireEventBuilder());
     }
     // outerSpawnShipEntity
     if (isExecutingFunction(STUB145, 0x00b6)) {
