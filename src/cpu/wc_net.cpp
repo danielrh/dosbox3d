@@ -700,6 +700,83 @@ void apply_weapon_fire(const WeaponFire &fire) {
     }
 }
 
+void apply_spawn(const Spawn &spawn) {
+    if (!spawn.has_mission_ship_id() || !spawn.has_situation_id()) {
+        return;
+    }
+    uint32_t mission_ship_id = spawn.mission_ship_id();
+    uint32_t situation_id = spawn.situation_id();
+    fprintf(stderr, "\r\napply_spawn(%d, %d)\r\n",
+            mission_ship_id, situation_id);
+    {
+        CPU_Push16((Bit16u)SegValue(cs));
+        CPU_Push16((Bit16u)reg_eip);
+        Bit8u shellcode[] = {
+            0x00, // nul terminate string
+            // push flags,
+            //0x9C, //PUSHF
+            //push all regs, xor si,si, push si
+            //0x60, //PUSHA
+            0x56, // push si (original value)
+            0xbe, situation_id & 0xff, situation_id >> 8, // mov si <- ship_id
+            0x56, // push si
+            0xbe, mission_ship_id & 0xff, mission_ship_id >> 8,// mov si <-- gun_id
+            0x56, // push si
+            // call far 12f2:00b6
+            0x9A, 0xB6, 0x00, 0xF2, 0x12,
+            // pop si, pop si, pop si
+            0x5E, 0x5E, 0x5E,
+            //0x61, 0x9D, // pop all regs, pop flags
+            0xCB // retf
+        };
+        for (int i = 0; i < sizeof(shellcode); i++) {
+            mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
+        }
+        SegSet16(cs, DS);
+        reg_eip = shellcode_start + 1;
+        fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
+    }
+}
+
+void apply_despawn(const Despawn &despawn) {
+    /*if (!should_simulate_damage(ship_id, ship_id)) {
+        return;
+    }*/
+    if (!despawn.has_ship_id()) {
+        return;
+    }
+    NetworkShipId id = NetworkShipId::from_net(despawn.ship_id());
+    uint32_t ship_id = id.to_local();
+    fprintf(stderr, "\r\napply_despawn(%d->%d)\r\n",
+            id.to_net(), id.to_local());
+    {
+        CPU_Push16((Bit16u)SegValue(cs));
+        CPU_Push16((Bit16u)reg_eip);
+        Bit8u shellcode[] = {
+            0x00, // nul terminate string
+            // push flags,
+            //0x9C, //PUSHF
+            //push all regs, xor si,si, push si
+            //0x60, //PUSHA
+            0x56, // push si (original value)
+            0xbe, ship_id & 0xff, ship_id >> 8, // mov si <- ship_id
+            0x56, // push si
+            // call far 12d7:012E
+            0x9A, 0xDD, 0x01, 0xad, 0x12,
+            // pop si, pop si
+            0x5E, 0x5E,
+            //0x61, 0x9D, // pop all regs, pop flags
+            0xCB // retf
+        };
+        for (int i = 0; i < sizeof(shellcode); i++) {
+            mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
+        }
+        SegSet16(cs, DS);
+        reg_eip = shellcode_start + 1;
+        fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
+    }
+}
+
 void merge_pending_frame(RemoteClient *sender, const Frame &frame) {
     for (int i = 0; i < frame.update_size(); i++) {
         const ShipUpdate &su = frame.update(i);
@@ -742,6 +819,8 @@ void apply_frame(const Frame &frame) {
     if (!server) {
         for (int i = 0; i < frame.event_size(); i++) {
             const Event &ev = frame.event(i);
+            std::string debug = ev.DebugString();
+            fprintf(stderr, "Received event %s\n", debug.c_str());
             queuedEvents.push_back(ev);
         }
     }
@@ -784,10 +863,12 @@ void apply_starting_frame(const Frame &frame) {
 }
 
 void process_network() {
+    /*
     for (int i = 0; i <= 0x3f; i++) {
         fprintf(stderr, "%02x ", mem_readw(DS_OFF + DS_entity_types + i * 2));
     }
     fprintf(stderr, "\n");
+    */
     gFrameNum++;
     //fprintf(stderr, "Start process_network for frame %d\n", gFrameNum);
     static NetworkMessage networkMessage;
@@ -913,9 +994,13 @@ void process_network() {
 
 template <class EventBuilder>
 void process_intercepted_event(EventBuilder builder) {
+    if (!builder.should_hook()) {
+        return;
+    }
+    builder.debug();
     //void(*build_event)(Event*), Bit16u retfAddr) {
     if (!gIsProcessingTrampoline) {
-        if (isServer) {
+        if (builder.should_run_locally()) {
             queuedEvents.push_back(Event());
             builder.build_event(&queuedEvents.back());
             mem_writeb_checked(DS_OFF + DS_tramp_lite, Instr_RETF);
@@ -926,11 +1011,12 @@ void process_intercepted_event(EventBuilder builder) {
             // return -- do not apply damage
             reg_eip = builder.ret_addr(); //ovr143
         }
-    }
-    if (!gIsProcessingTrampoline) {
-        if (builder.should_simulate()) {
+        
+        if (builder.should_sync()) {
             Event *ev = pendingState.frame().add_event();
             builder.build_event(ev);
+            std::string debug = ev->DebugString();
+            fprintf(stderr, "Added event %s\n", debug.c_str());
         }
     }
 }
@@ -946,7 +1032,11 @@ public:
         fire->set_gun_id(gun_id);
     }
 
-    bool should_simulate() {
+    bool should_hook() {
+        return true;
+    }
+
+    bool should_sync() {
         NetworkShipId src = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
         if (server) {
             return server->get_client(src) == NULL;
@@ -960,7 +1050,11 @@ public:
         return 0x0d44;
     }
 
-    void debug(Event *ev) {
+    bool should_run_locally() {
+        return isServer;
+    }
+
+    void debug() {
         /*
         fprintf(stderr, "\r\ndoDamage%s(%d->%d, %d->%d, %d, <%d, %d, %d>) rng=%x\r\n",
                 shouldSim ? "[added-to-pending-frame]" : "[not-sent]",
@@ -987,12 +1081,88 @@ public:
         damage->set_seed(randomSeed);
     }
 
-    bool should_simulate() {
+    bool should_hook() {
+        return true;
+    }
+
+    bool should_sync() {
+        return isServer;
+    }
+
+    bool should_run_locally() {
         return isServer;
     }
 
     Bit16u ret_addr() {
         return 0x0d44;
+    }
+
+    void debug() {
+    }
+};
+
+class SpawnEventBuilder {
+public:
+    void build_event(Event *ev) {
+        Bit16u missionShipId = mem_readw(DS_OFF + reg_esp + 4);
+        Bit16u situationId = mem_readw(DS_OFF + reg_esp + 6); // index into navpoint
+        Bit32u randomSeed = mem_readd(DS_OFF + DS_RandomSeed);
+        Spawn *spawn = ev->mutable_spawn();
+        spawn->set_mission_ship_id(missionShipId);
+        spawn->set_situation_id(situationId);
+        spawn->set_seed(randomSeed);
+    }
+
+    bool should_hook() {
+        return true;
+    }
+
+    bool should_sync() {
+        return isServer;
+    }
+
+    bool should_run_locally() {
+        return isServer;
+    }
+
+    Bit16u ret_addr() {
+        return 0x1252;
+    }
+
+    void debug() {
+        fprintf(stderr, "process_intercepted_event %s %d %d %d mem=%d\n",
+            __PRETTY_FUNCTION__, gIsProcessingTrampoline,
+            should_run_locally(), should_sync(),
+            mem_readw(DS_OFF + reg_esp + 4));
+    }
+};
+
+class DespawnEventBuilder {
+public:
+    void build_event(Event *ev) {
+        NetworkShipId shipid = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
+        Despawn *despawn = ev->mutable_despawn();
+        despawn->set_ship_id(shipid.to_net());
+    }
+
+    bool should_hook() {
+        NetworkShipId shipid = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
+        return shipid.to_local() < 10;
+    }
+    
+    bool should_sync() {
+        return isServer;
+    }
+
+    bool should_run_locally() {
+        return isServer;
+    }
+
+    Bit16u ret_addr() {
+        return 0x1ce0;
+    }
+
+    void debug() {
     }
 };
 
@@ -1051,7 +1221,7 @@ void process_despawn_ship() {
 }
 
 void process_trampoline() {
-    fprintf(stderr, "Trampoline: start %d\n", (int)queuedEvents.size());
+    //fprintf(stderr, "Trampoline: start %d\n", (int)queuedEvents.size());
     gIsProcessingTrampoline = true;
     {
         const Event &ev = gCurrentEvent;
@@ -1068,7 +1238,7 @@ void process_trampoline() {
             // Finished despawning
             fprintf(stderr, "Trampoline: finished despawn\n");
         } else {
-            fprintf(stderr, "Trampoline: no events finished yet\n");
+            //fprintf(stderr, "Trampoline: no events finished yet\n");
         }
     }
 
@@ -1087,26 +1257,31 @@ void process_trampoline() {
             apply_damage(ev.damage());
         }
         if (ev.has_spawn()) {
-            fprintf(stderr, "Trampoline: TODO spawn!!!!!!\n");
-            // TODO
+            fprintf(stderr, "Trampoline: spawn!!!!!!\n");
+            apply_spawn(ev.spawn());
         }
         if (ev.has_despawn()) {
-            fprintf(stderr, "Trampoline: TODO despawn!!!!!!!\n");
-            // TODO
+            fprintf(stderr, "Trampoline: despawn!!!!!!!\n");
+            apply_despawn(ev.despawn());
         }
         if (reg_eip != DS_tramp_ret_NOP) {
-            fprintf(stderr, "Trampoline: Starting next bounce\n");
-            // The processor has been sent out on an away mission.
-            // we will get back to process_trampoline after the current
-            // function has executed.
-            return;
+            if (reg_eip == shellcode_start + 1) {
+                fprintf(stderr, "Trampoline: Starting next bounce\n");
+                // The processor has been sent out on an away mission.
+                // we will get back to process_trampoline after the current
+                // function has executed.
+                return;
+            } else {
+                std::string debug = ev.DebugString();
+                fprintf(stderr, "Unimplemented event %s\n", debug.c_str());
+            }
         }
     }
     // We have finished executing all events.
     gCurrentEvent.Clear();
 
     // Now anything else to execute after processing all events this frame
-    fprintf(stderr, "Finished processing events for frame %d\n", gFrameNum);
+    //fprintf(stderr, "Finished processing events for frame %d\n", gFrameNum);
     gIsProcessingTrampoline = false;
 }
 
@@ -1145,11 +1320,11 @@ void wc_net_check_cpu_hooks() {
     }
     // outerSpawnShipEntity
     if (isExecutingFunction(STUB145, 0x00b6)) {
-        process_spawn_ship();
+        process_intercepted_event(SpawnEventBuilder());
     }
     // despawn
     if (isExecutingFunction(STUB140, 0x01dd)) {
-        process_despawn_ship();
+        process_intercepted_event(DespawnEventBuilder());
     }
     if (isExecutingFunction(STUB140, 0x0101)) {
         // allocate anon entity

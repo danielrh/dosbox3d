@@ -36,12 +36,13 @@ message WeaponFire {
 }
 
 message Spawn {
-    optional uint32 mission_ship_id = 1;
-    optional uint32 situation_id = 2;
+        optional uint32 mission_ship_id = 1;
+        optional uint32 situation_id = 2;
+        optional fixed32 seed = 5;
 }
 
 message Despawn {
-    optional uint32 ship_id = 1;
+        optional uint32 ship_id = 1;
 }
 
 message ShipUpdate {
