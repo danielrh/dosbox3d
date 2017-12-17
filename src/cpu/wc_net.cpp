@@ -572,27 +572,43 @@ static NetworkShipId find_first_free_ship_entity() {
     fprintf(stderr, "Bad: no free ship entities!\n");
     return NetworkShipId::invalid();
 }
-
+struct SavedShipEntities {
+    Bit16u entities[10];
+};
+std::vector<SavedShipEntities> saved_ship_types;
 static void force_ship_spawn_entity_id(NetworkShipId whichShip) {
+    if (!saved_ship_types.empty()) {
+        fprintf(stderr, "BAD: restore_ship-entites again during restore\n");
+    }
     Bit16u which = whichShip.to_local();
+    SavedShipEntities sse;
+    memset(&sse, 0, sizeof(sse));
     for (Bit16u i = 1; i < 10; i++) {
         Bit32u addr = DS_OFF + DS_entity_types + i * 2;
+        sse.entities[i] = mem_readw(addr);
         if (i != which) {
-            //mem_writew (addr, mem_readw(addr) ^ 7);
+            mem_writew(addr, 1);
         }
         if (i == which && mem_readw(addr) != 0) {
             fprintf(stderr, "Client desync: entity %d is %d not free\n",
                     which, mem_readw(addr));
         }
     }
+    saved_ship_types.push_back(sse);
 }
 
 static void restore_ship_spawn_entities(NetworkShipId whichShip) {
+    if (saved_ship_types.empty()) {
+        fprintf(stderr, "BAD: restore_ship-entites called without match\n");
+        return;
+    }
+    SavedShipEntities sse = saved_ship_types.back();
+    saved_ship_types.pop_back();
     Bit16u which = whichShip.to_local();
     for (Bit16u i = 1; i < 10; i++) {
         Bit32u addr = DS_OFF + DS_entity_types + i * 2;
         if (i != which) {
-            //mem_writew (addr, mem_readw(addr) ^ 7);
+            mem_writew (addr, sse.entities[i]);
         }
         if (i == which && mem_readw(addr) == 0) {
             fprintf(stderr, "Client desync: entity %d not successfully spawned\n",
