@@ -50,8 +50,13 @@ class NetworkShipId {
             id = 0x3f;
         }
     }
+
 public:
 
+    static NetworkShipId invalid() {
+        return NetworkShipId(-1);
+    }
+    
     static NetworkShipId from_local(int id) {
         return NetworkShipId(remap_ship_id(id));
     }
@@ -66,6 +71,10 @@ public:
         return NetworkShipId::from_local(id);
     }
 
+    bool is_invalid() const {
+        return id < 0 || id >= 0x3d;
+    }
+
     int to_local() const {
         return remap_ship_id(id);
     }
@@ -75,6 +84,14 @@ public:
 
     bool operator== (const NetworkShipId &other) const {
         return id == other.id;
+    }
+
+    bool operator!= (const NetworkShipId &other) const {
+        return id != other.id;
+    }
+
+    bool operator< (const NetworkShipId &other) const {
+        return id < other.id;
     }
 };
 

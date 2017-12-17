@@ -199,9 +199,29 @@ struct ClientState {
 
 struct PendingState {
     NetworkMessage frameMessage;
+    std::map<NetworkShipId, Spawn> currentlySpawnedShips;
 
     Frame &frame () {
         return *frameMessage.mutable_frame();
+    }
+
+    void add_ship(const Spawn &spawn) {
+        if (!spawn.has_ship_id()) {
+            return;
+        }
+        NetworkShipId shipId = NetworkShipId::from_net(spawn.ship_id());
+        if (currentlySpawnedShips.find(shipId) != currentlySpawnedShips.end()) {
+            fprintf(stderr, "Spawn ship %d already in currentlySpawnedShips.\n",
+                    shipId.to_net());
+        }
+        currentlySpawnedShips[shipId] = spawn;
+    }
+
+    void remove_ship(NetworkShipId shipId) {
+        if (currentlySpawnedShips.erase(shipId) == 0) {
+            fprintf(stderr, "Despawn ship %d not in currentlySpawnedShips.\n",
+                    shipId.to_net());
+        }
     }
 
 } pendingState;
@@ -542,6 +562,45 @@ void store_vector(const VectorClass &vec, int naddr) {
     mem_writed(faraddr + 0x8, vec.z());
 }
 
+static NetworkShipId find_first_free_ship_entity() {
+    for (Bit16u i = 1; i < 10; i++) {
+        if (mem_readw(DS_OFF + DS_entity_types + i * 2) == 0) {
+            fprintf(stderr, "found free %d [%d->%d]\n", (int)i, NetworkShipId::from_local(i).to_net(), NetworkShipId::from_local(i).to_local());
+            return NetworkShipId::from_local(i);
+        }
+    }
+    fprintf(stderr, "Bad: no free ship entities!\n");
+    return NetworkShipId::invalid();
+}
+
+static void force_ship_spawn_entity_id(NetworkShipId whichShip) {
+    Bit16u which = whichShip.to_local();
+    for (Bit16u i = 1; i < 10; i++) {
+        Bit32u addr = DS_OFF + DS_entity_types + i * 2;
+        if (i != which) {
+            mem_writew (addr, mem_readw(addr) ^ 7);
+        }
+        if (i == which && mem_readw(addr) != 0) {
+            fprintf(stderr, "Client desync: entity %d is %d not free\n",
+                    which, mem_readw(addr));
+        }
+    }
+}
+
+static void restore_ship_spawn_entities(NetworkShipId whichShip) {
+    Bit16u which = whichShip.to_local();
+    for (Bit16u i = 1; i < 10; i++) {
+        Bit32u addr = DS_OFF + DS_entity_types + i * 2;
+        if (i != which) {
+            mem_writew (addr, mem_readw(addr) ^ 7);
+        }
+        if (i == which && mem_readw(addr) == 0) {
+            fprintf(stderr, "Client desync: entity %d not successfully spawned\n",
+                    which);
+        }
+    }
+}
+
 void populate_ship_update(Frame *frame, NetworkShipId ship_id) {
     ShipUpdate &su = get_update(*frame, ship_id);
     su.set_ship_id(ship_id.to_net());
@@ -704,6 +763,9 @@ void apply_spawn(const Spawn &spawn) {
     if (!spawn.has_mission_ship_id() || !spawn.has_situation_id()) {
         return;
     }
+    if (spawn.has_ship_id()) {
+        force_ship_spawn_entity_id(NetworkShipId::from_net(spawn.ship_id()));
+    }
     uint32_t mission_ship_id = spawn.mission_ship_id();
     uint32_t situation_id = spawn.situation_id();
     fprintf(stderr, "\r\napply_spawn(%d, %d)\r\n",
@@ -802,7 +864,7 @@ void merge_pending_frame(RemoteClient *sender, const Frame &frame) {
     }
 }
 
-void apply_frame(const Frame &frame) {
+void apply_frame(const Frame &frame, bool applyOwnLocation=false) {
     for (int i = 0; i < frame.update_size(); i++) {
         const ShipUpdate &su = frame.update(i);
         if (!su.has_ship_id()) {
@@ -812,7 +874,7 @@ void apply_frame(const Frame &frame) {
         if (ship_id.to_local() >= 10) {
             continue; // Do not simulate ephemeral objects.
         }
-        if ((client && !client->is_authoritative(ship_id)) || (server && ship_id.to_local() != 0)) {
+        if (applyOwnLocation || (client && !client->is_authoritative(ship_id)) || (server && ship_id.to_local() != 0)) {
             apply_ship_update_location(su);
         }
     }
@@ -824,41 +886,23 @@ void apply_frame(const Frame &frame) {
             queuedEvents.push_back(ev);
         }
     }
-    /*
-    for (int i = 0; i < frame.update_size(); i++) {
-        const ShipUpdate &su = frame.update(i);
-        if (!su.has_ship_id()) {
-            return;
-        }
-        NetworkShipId ship_id = NetworkShipId::from_net(su.ship_id());
-        for (int i = 0; i < su.fire_size(); i++) {
-            const WeaponFire &fire = su.fire(i);
-            apply_weapon_fire(fire, ship_id);
-            return; // FIXME: Bugs happen when pushing more than one call to the stack per frame
-        }
-    }
-    for (int i = 0; i < frame.update_size(); i++) {
-        const ShipUpdate &su = frame.update(i);
-        if (!su.has_ship_id()) {
-            return;
-        }
-        NetworkShipId ship_id = NetworkShipId::from_net(su.ship_id());
-        for (int i = 0; i < su.damage_size(); i++) {
-            const Damage &dam = su.damage(i);
-            apply_damage(dam, ship_id);
-            return; // FIXME: Bugs happen when pushing more than one call to the stack per frame
-        }
-    }
-    */
 }
 
 void apply_starting_frame(const Frame &frame) {
-    for (int i = 0; i < frame.update_size(); i++) {
-        const ShipUpdate &su = frame.update(i);
-        if (!su.has_ship_id()) {
-            continue;
-        }
-        apply_ship_update_location(su);
+    apply_frame(frame, true);
+}
+
+void print_banner() {
+    if (client) {
+        fprintf(stderr,
+            "=========================================================\n"
+            "======================== CLIENT =========================\n"
+            "=========================================================\n\n");
+    } else {
+        fprintf(stderr,
+            "=========================================================\n"
+            "=========--------------- SERVER ----------------=========\n"
+            "=========================================================\n\n");
     }
 }
 
@@ -894,6 +938,7 @@ void process_network() {
                 apply_starting_frame(game.starting_state());
             }
         }
+        print_banner();
     }
 
     if (server) {
@@ -960,6 +1005,13 @@ void process_network() {
             game->set_assigned_player_id(cl->id.to_net());
             Frame * frame = game->mutable_starting_state();
             populate_server_frame(frame);
+            for (std::map<NetworkShipId, Spawn>::iterator it = pendingState.currentlySpawnedShips.begin(); it != pendingState.currentlySpawnedShips.end(); it++) {
+                Event *ev = frame->add_event();
+                *ev->mutable_spawn() = it->second;
+            }
+            std::string debug = frame->DebugString();
+            fprintf(stderr, "Sending starting state to client %d: %s\n",
+                    cl->id.to_net(), debug.c_str());
             if (!send_msg(s, networkMessage).ok()) {
                 cl->disconnect();
                 break;
@@ -1104,10 +1156,16 @@ public:
 class SpawnEventBuilder {
 public:
     void build_event(Event *ev) {
+        NetworkShipId shipid = find_first_free_ship_entity();
+        if (shipid.is_invalid()) {
+            return;
+        }
         Bit16u missionShipId = mem_readw(DS_OFF + reg_esp + 4);
         Bit16u situationId = mem_readw(DS_OFF + reg_esp + 6); // index into navpoint
         Bit32u randomSeed = mem_readd(DS_OFF + DS_RandomSeed);
         Spawn *spawn = ev->mutable_spawn();
+        spawn->set_ship_id(shipid.to_net());
+        fprintf(stderr, "set spawn ship [%d->%d]\n", shipid.to_net(), shipid.to_local());
         spawn->set_mission_ship_id(missionShipId);
         spawn->set_situation_id(situationId);
         spawn->set_seed(randomSeed);
@@ -1151,11 +1209,16 @@ public:
     }
     
     bool should_sync() {
-        return isServer;
+        NetworkShipId shipid = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
+        bool isWingmanDeath = server && server->get_client(shipid) != NULL;
+        if (isWingmanDeath) {
+            fprintf(stderr, "Ignoring wingman death %d\n", shipid.to_net());
+        }
+        return isServer && !isWingmanDeath;
     }
 
     bool should_run_locally() {
-        return isServer;
+        return should_sync();
     }
 
     Bit16u ret_addr() {
@@ -1234,9 +1297,23 @@ void process_trampoline() {
         } else if (ev.has_spawn()) {
             // Finished spawning
             fprintf(stderr, "Trampoline: finished spawn\n");
+            const Spawn &spawn = ev.spawn();
+            if (spawn.has_ship_id()) {
+                NetworkShipId id = NetworkShipId::from_net(spawn.ship_id());
+                NetworkShipId returnId = NetworkShipId::from_local(reg_eax & 0xffff);
+                if (id != returnId) {
+                    fprintf(stderr, "Wanted to spawn %d but spawned %d\n",
+                            id.to_local(), returnId.to_local());
+                }
+                restore_ship_spawn_entities(id);
+            }
+            pendingState.add_ship(spawn);
         } else if (ev.has_despawn()) {
             // Finished despawning
             fprintf(stderr, "Trampoline: finished despawn\n");
+            const Despawn &despawn = ev.despawn();
+            NetworkShipId id = NetworkShipId::from_net(despawn.ship_id());
+            pendingState.remove_ship(id);
         } else {
             //fprintf(stderr, "Trampoline: no events finished yet\n");
         }
