@@ -578,7 +578,7 @@ static void force_ship_spawn_entity_id(NetworkShipId whichShip) {
     for (Bit16u i = 1; i < 10; i++) {
         Bit32u addr = DS_OFF + DS_entity_types + i * 2;
         if (i != which) {
-            mem_writew (addr, mem_readw(addr) ^ 7);
+            //mem_writew (addr, mem_readw(addr) ^ 7);
         }
         if (i == which && mem_readw(addr) != 0) {
             fprintf(stderr, "Client desync: entity %d is %d not free\n",
@@ -592,7 +592,7 @@ static void restore_ship_spawn_entities(NetworkShipId whichShip) {
     for (Bit16u i = 1; i < 10; i++) {
         Bit32u addr = DS_OFF + DS_entity_types + i * 2;
         if (i != which) {
-            mem_writew (addr, mem_readw(addr) ^ 7);
+            //mem_writew (addr, mem_readw(addr) ^ 7);
         }
         if (i == which && mem_readw(addr) == 0) {
             fprintf(stderr, "Client desync: entity %d not successfully spawned\n",
@@ -761,6 +761,7 @@ void apply_weapon_fire(const WeaponFire &fire) {
 
 void apply_spawn(const Spawn &spawn) {
     if (!spawn.has_mission_ship_id() || !spawn.has_situation_id()) {
+        fprintf(stderr, "Invalid spawn event!\n");
         return;
     }
     if (spawn.has_ship_id()) {
@@ -1052,6 +1053,10 @@ void process_intercepted_event(EventBuilder builder) {
     builder.debug();
     //void(*build_event)(Event*), Bit16u retfAddr) {
     if (!gIsProcessingTrampoline) {
+        if (!queuedEvents.empty()) {
+            fprintf(stderr, "queudEvents should be empty!\n");
+            assert(false);
+        }
         if (builder.should_run_locally()) {
             queuedEvents.push_back(Event());
             builder.build_event(&queuedEvents.back());
@@ -1085,6 +1090,7 @@ public:
     }
 
     bool should_hook() {
+        return false;
         return true;
     }
 
@@ -1134,6 +1140,7 @@ public:
     }
 
     bool should_hook() {
+        return false;
         return true;
     }
 
@@ -1158,6 +1165,7 @@ public:
     void build_event(Event *ev) {
         NetworkShipId shipid = find_first_free_ship_entity();
         if (shipid.is_invalid()) {
+            fprintf(stderr, "Bad: IS INVALID AFTER SPAWN!!!");
             return;
         }
         Bit16u missionShipId = mem_readw(DS_OFF + reg_esp + 4);
@@ -1204,6 +1212,7 @@ public:
     }
 
     bool should_hook() {
+        return false;
         NetworkShipId shipid = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
         return shipid.to_local() < 10;
     }
@@ -1308,6 +1317,9 @@ void process_trampoline() {
                 restore_ship_spawn_entities(id);
             }
             pendingState.add_ship(spawn);
+            if (!queuedEvents.empty()) {
+                fprintf(stderr, "Bad: there are extra queued events!\n");
+            }
         } else if (ev.has_despawn()) {
             // Finished despawning
             fprintf(stderr, "Trampoline: finished despawn\n");
