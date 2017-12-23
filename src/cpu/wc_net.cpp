@@ -172,6 +172,7 @@ struct ClientState {
 	int clientSocket;
     NetworkShipId shipId;
     std::string callsign;
+    std::vector<int> netToLocalMapping;
     ClientState()
       : clientSocket(-1),
         shipId(NetworkShipId::from_net(0))
@@ -194,6 +195,44 @@ struct ClientState {
             return true;
         }
         return false;
+    }
+    int local_to_net(int localid) {
+        // Don't interact with NetworkShipId objects in here.
+        for (unsigned int i = 0; i < netToLocalMapping.size(); i++) {
+            if (netToLocalMapping[i] == localid) {
+                return i;
+            }
+        }
+        fprintf(stderr, "Failed to find local_to_net %d!\n", localid);
+        return localid;
+    }
+    int net_to_local(int netid) {
+        // Don't interact with NetworkShipId objects in here.
+        if (netid < 0 || netid >= netToLocalMapping.size()) {
+            fprintf(stderr, "Received invalid ship %d!\n", netid);
+            return netid;
+        }
+        if (netToLocalMapping[netid] == -1) {
+            fprintf(stderr, "Failed to find net_to_local %d!\n", netid);
+            return netid;
+        }
+        return netToLocalMapping[netid];
+    }
+    void insert_spawn_id(int netid, int localid) {
+        if (netid < 0 || netid >= 10) {
+            fprintf(stderr, "Avoid inserting temporary object %d to %d!\n",
+                    netid, localid);
+            return;
+        }
+        while (netToLocalMapping.size() <= netid) {
+            netToLocalMapping.push_back(-1);
+        }
+        if (netid == this->shipId.to_net()) {
+            netToLocalMapping[netid] = 0; // this client must fly the player ship 0
+            netToLocalMapping[0] = localid; // the server's player ship gets what just spawned.
+        } else {
+            netToLocalMapping[netid] = localid;
+        }
     }
 } *client;
 
@@ -237,17 +276,28 @@ ShipUpdate &get_update(Frame &fr, NetworkShipId id) {
     return *ret;
 }
 
-int NetworkShipId::remap_ship_id(int ship_id) {
+int NetworkShipId::remap_ship_id(int ship_id, bool to_local) {
     if (!client) {
         return ship_id; // server does not remap.
     }
+    int ret;
+    // mapping of server-sent spawn-ids to return of id generation on client.
+    if (to_local) {
+        ret = client->net_to_local(ship_id);
+    } else {
+        ret = client->local_to_net(ship_id);
+    }
     if (ship_id == 0) {
-        return client->shipId.to_net();
+        if (ret != client->shipId.to_net()) {
+            fprintf(stderr, "Assertion: server ship id must return client id\n");
+        }
     }
     if (ship_id == client->shipId.to_net()) {
-        return 0;
+        if (ret != 0) {
+            fprintf(stderr, "Assertion: client ship id must return 0\n");
+        }
     }
-    return ship_id;
+    return ret;
 }
 
 bool should_simulate_damage(NetworkShipId src, NetworkShipId dst) {
@@ -267,9 +317,6 @@ bool should_simulate_damage(NetworkShipId src, NetworkShipId dst) {
     }
     fprintf(stderr, "Not client or server\n");
     return false;
-}
-
-bool should_simulate_fire(NetworkShipId src) {
 }
 
 bool is_client_authoritative(NetworkShipId sender, NetworkShipId id) {
@@ -572,6 +619,8 @@ static NetworkShipId find_first_free_ship_entity() {
     fprintf(stderr, "Bad: no free ship entities!\n");
     return NetworkShipId::invalid();
 }
+
+/*
 struct SavedShipEntities {
     Bit16u entities[10];
 };
@@ -616,6 +665,7 @@ static void restore_ship_spawn_entities(NetworkShipId whichShip) {
         }
     }
 }
+*/
 
 void populate_ship_update(Frame *frame, NetworkShipId ship_id) {
     ShipUpdate &su = get_update(*frame, ship_id);
@@ -780,9 +830,10 @@ void apply_spawn(const Spawn &spawn) {
         fprintf(stderr, "Invalid spawn event!\n");
         return;
     }
+    /*
     if (spawn.has_ship_id()) {
         force_ship_spawn_entity_id(NetworkShipId::from_net(spawn.ship_id()));
-    }
+    }*/
     uint32_t mission_ship_id = spawn.mission_ship_id();
     uint32_t situation_id = spawn.situation_id();
     fprintf(stderr, "\r\napply_spawn(%d, %d)\r\n",
@@ -1324,13 +1375,16 @@ void process_trampoline() {
             fprintf(stderr, "Trampoline: finished spawn\n");
             const Spawn &spawn = ev.spawn();
             if (spawn.has_ship_id()) {
+                if (client) {
+                    client->insert_spawn_id(spawn.ship_id(), reg_eax & 0xffff);
+                }
                 NetworkShipId id = NetworkShipId::from_net(spawn.ship_id());
                 NetworkShipId returnId = NetworkShipId::from_local(reg_eax & 0xffff);
                 if (id != returnId) {
-                    fprintf(stderr, "Wanted to spawn %d but spawned %d\n",
+                    fprintf(stderr, "Info: Wanted to spawn %d but spawned %d\n",
                             id.to_local(), returnId.to_local());
                 }
-                restore_ship_spawn_entities(id);
+                //restore_ship_spawn_entities(id);
             }
             pendingState.add_ship(spawn);
             if (!queuedEvents.empty()) {

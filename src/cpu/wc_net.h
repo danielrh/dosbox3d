@@ -37,17 +37,17 @@ struct RecvStatus {
 class NetworkShipId {
     int id;
 
-    static int remap_ship_id(int ship_id);
+    static int remap_ship_id(int ship_id, bool to_local);
 
     explicit NetworkShipId(int id)
         : id(id) {
         if (id < 0) {
             fprintf(stderr, "Negative ship id found %d\n", id);
-            id = 0x3f;
+            //id = 0x3f;
         }
         if (id >= 0x3d) {
             fprintf(stderr, "Too large ship id found %d\n", id);
-            id = 0x3f;
+            //id = 0x3f;
         }
     }
 
@@ -58,7 +58,7 @@ public:
     }
     
     static NetworkShipId from_local(int id) {
-        return NetworkShipId(remap_ship_id(id));
+        return NetworkShipId(remap_ship_id(id, false));
     }
 
     static NetworkShipId from_net(int id) {
@@ -76,7 +76,7 @@ public:
     }
 
     int to_local() const {
-        return remap_ship_id(id);
+        return remap_ship_id(id, true);
     }
     int to_net() const {
         return id;
