@@ -678,8 +678,12 @@ void populate_ship_update(Frame *frame, NetworkShipId ship_id) {
 }
 
 void populate_server_frame(Frame *frame) {
-    for (int i = 0; i < 0x3c; i++) {
-        populate_ship_update(frame, NetworkShipId::from_net(i));
+    for (int i = 0; i < 10; i++) {
+        Bit32u addr = DS_OFF + DS_entity_types + i * 2;
+        Bit16u typ = mem_readw(addr);
+        if (typ != 0) {
+            populate_ship_update(frame, NetworkShipId::from_net(i));
+        }
     }
 }
 
@@ -1150,7 +1154,6 @@ public:
     }
 
     bool should_hook() {
-        return false;
         return true;
     }
 
@@ -1200,7 +1203,6 @@ public:
     }
 
     bool should_hook() {
-        return false;
         return true;
     }
 
@@ -1286,7 +1288,6 @@ public:
     }
 
     bool should_hook() {
-        return false;
         NetworkShipId shipid = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
         return shipid.to_local() < 10;
     }
@@ -1301,6 +1302,12 @@ public:
     }
 
     bool should_run_locally() {
+        // FIXME: on client, we try to ignore despawns,
+        // but we observe that when server autopilots, and the client autopilots
+        // the destruction animation is continuously playing on all faraway
+        // objects, and those objects are not targettable.
+        // We need to figure out how to prevent this "destroyed" state from
+        // being set.
         return should_sync();
     }
 
@@ -1379,7 +1386,7 @@ void process_trampoline() {
             fprintf(stderr, "Trampoline: finished damage\n");
         } else if (ev.has_spawn()) {
             // Finished spawning
-            fprintf(stderr, "Trampoline: finished spawn\n");
+            fprintf(stderr, "Trampoline: finished spawn %d\n", reg_eax & 0xffff);
             const Spawn &spawn = ev.spawn();
             if (spawn.has_ship_id()) {
                 if (client) {
@@ -1395,7 +1402,9 @@ void process_trampoline() {
             }
             pendingState.add_ship(spawn);
             if (!queuedEvents.empty()) {
-                fprintf(stderr, "Bad: there are extra queued events!\n");
+                if (isServer) {
+                    fprintf(stderr, "Bad: there are extra queued events!\n");
+                }
             }
         } else if (ev.has_despawn()) {
             // Finished despawning
