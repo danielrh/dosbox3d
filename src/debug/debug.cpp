@@ -337,6 +337,10 @@ public:
 	static CBreakpoint*				ignoreOnce;
 };
 
+void setBreakpoint(Bit16u seg, Bit32u off) {
+    CBreakpoint::AddBreakpoint(seg, off, false);
+}
+
 CBreakpoint::CBreakpoint(void):
 location(0),
 active(false),once(false),
@@ -2470,8 +2474,14 @@ void DEBUG_HeavyWriteLogInstruction(void) {
 	DEBUG_ShowMsg("DEBUG: Done.\n");	
 };
 
+bool forceBreak = false;
+
 bool DEBUG_HeavyIsBreakpoint(void) {
 	static Bitu zero_count = 0;
+    if (forceBreak) {
+        forceBreak = false;
+        return true;
+    }
 	if (cpuLog) {
 		if (cpuLogCounter>0) {
 			LogInstruction(SegValue(cs),reg_eip,cpuLogFile);

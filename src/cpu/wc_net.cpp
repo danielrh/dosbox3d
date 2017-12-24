@@ -548,12 +548,12 @@ RecvStatus send_msg(int sock, const NetworkMessage &msg) {
 }
 
 const Bit8u trampoline_code[6] = {
-            0x9C, //PUSHF
-            0x60, //PUSHA
-            0x90, //NOP <-- We hook into this instruction.
-            0x61, //POPA
-            0x9D, //POPF
-            0xCB //RETF
+    0x55, // PUSH BP
+    0x8B, // MOV SP, BP
+    0xEC, // MOV SP, BP
+    0x90, //NOP <-- We hook into this instruction.
+    0x5D, //POP BP
+    0xCB //RETF
 };
 
 const int DS = 0x13d3;
@@ -570,9 +570,8 @@ enum DataSegValues {
     DS_error_has_occurred = 0x0395,
     shellcode_start = DS_error_has_occurred, // 249 bytes
     DS_tmpvector = DS_loading_wing_commander, // 100 bytes
-    DS_tramp_lite = DS_loading_wing_commander + 100, // 1 byte
     DS_trampoline = DS_loading_wing_commander + 101, // 6 bytes
-    DS_tramp_ret_NOP = DS_trampoline + 2, // NOP instruction we hook into
+    DS_tramp_ret_NOP = DS_trampoline + 3, // NOP instruction we hook into
     //DS_tmpvector = DS_Pos + (12 * 0x3f)
     DS_entity_types = 0xBD1A
 };
@@ -1099,15 +1098,11 @@ void process_network() {
         }
         apply_frame(networkMessage.frame());
     }
-    for (int i = 0; i < sizeof(trampoline_code); i++) {
-        mem_writeb_checked(DS_OFF + DS_trampoline + i, trampoline_code[i]);
-    }
 
     //fprintf(stderr, "Jumping to trampoline\n");
     CPU_Push16((Bit16u)SegValue(cs));
     CPU_Push16((Bit16u)reg_eip);
-    SegSet16(cs, DS);
-    reg_eip = DS_trampoline;
+    go_to_trampoline();
     // After trampoline, we will return to the start of process_network.
     gIgnoreNextProcessNetwork = true;
 }
@@ -1127,9 +1122,7 @@ void process_intercepted_event(EventBuilder builder) {
         if (builder.should_run_locally()) {
             queuedEvents.push_back(Event());
             builder.build_event(&queuedEvents.back());
-            mem_writeb_checked(DS_OFF + DS_tramp_lite, Instr_RETF);
-            SegSet16(cs, DS);
-            reg_eip = DS_tramp_lite;
+            go_to_trampoline();
         } else {
             // if we go in here, dosbox will return and NOT EXECUTE the fire.
             // return -- do not apply damage
@@ -1227,6 +1220,13 @@ public:
     }
 };
 
+// breaks later. not synchronous.
+extern void DEBUG_Enable(bool pressed);
+
+// only in heavy debug;
+extern bool forceBreak;
+
+
 class SpawnEventBuilder {
 public:
     void build_event(Event *ev) {
@@ -1247,6 +1247,13 @@ public:
     }
 
     bool should_hook() {
+        Bit16u missionShipId = mem_readw(DS_OFF + reg_esp + 4);
+        Bit16u situationId = mem_readw(DS_OFF + reg_esp + 6); // index into navpoint
+        fprintf(stderr, "about to spwan spawn ship (%d,%d)\n", missionShipId, situationId);
+        /*if (!gIsProcessingTrampoline) {
+          forceBreak = true;
+          }*/
+        //return false;
         return true;
     }
 
@@ -1444,6 +1451,14 @@ void process_trampoline() {
     gIsProcessingTrampoline = false;
 }
 
+void go_to_trampoline() {
+    for (int i = 0; i < sizeof(trampoline_code); i++) {
+        mem_writeb_checked(DS_OFF + DS_trampoline + i, trampoline_code[i]);
+    }
+    SegSet16(cs, DS);
+    reg_eip = DS_trampoline;
+}
+
 bool isExecutingFunction(Bit16u stubSeg, Bit16u stubOff) {
     Bit8u instType = mem_readb(stubSeg * 0x10 + stubOff);
     if (instType != 0xea) {
@@ -1468,7 +1483,26 @@ enum {
     STUB147 = 0x130e
 };
 
+extern void setBreakpoint(Bit16u seg, Bit32u off);
+
 void wc_net_check_cpu_hooks() {
+    /*{
+        Bit16u stubSeg = STUB145;
+        Bit16u stubOff = 0x00b6;
+        Bit8u instType = mem_readb(stubSeg * 0x10 + stubOff);
+        if (instType == 0xea) {
+            Bit16u realOff = mem_readw(stubSeg * 0x10 + stubOff + 1);
+            Bit16u realSeg = mem_readw(stubSeg * 0x10 + stubOff + 3);
+            static bool didSetBreakpoint = (
+                setBreakpoint(realSeg,realOff),
+                //setBreakpoint(DS, DS_tramp_lite),
+                //setBreakpoint(DS, DS_trampoline),
+                setBreakpoint(DS, shellcode_start + 1),
+                setBreakpoint(DS, shellcode_start + 2),
+                fprintf(stderr, "Setting breakpoints...\n"),
+                    true);
+        }
+        }*/
     // do_damage
     if (isExecutingFunction(STUB143, 0x0084)) {
         process_intercepted_event(DamageEventBuilder());
@@ -1493,9 +1527,6 @@ void wc_net_check_cpu_hooks() {
         */
     }
     if (SegValue(cs) == DS && reg_eip == DS_tramp_ret_NOP) {
-        process_trampoline();
-    }
-    if (SegValue(cs) == DS && reg_eip == DS_tramp_lite) {
         process_trampoline();
     }
     if (SegValue(cs) == 0x0560 && reg_eip == 0x20e3) {
