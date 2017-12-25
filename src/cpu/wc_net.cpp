@@ -27,10 +27,16 @@ bool DEBUG_PROTOBUF =
 #endif
     ;
 
+// only in heavy debug;
+extern bool forceBreak;
+
+
+
 NetConfig::NetConfig() {
     host = getenv("WCHOST");
     portstr = getenv("WCPORT");
-    port = portstr ? (uint16_t)atoi(portstr) : 0;
+    portstr = portstr ? portstr : "13255";
+    port = (uint16_t)atoi(portstr);
     if (port < 1024) {
         fprintf(stderr, "You must set the WCPORT and (optionally) WCHOST env variables!\n");
         abort();
@@ -569,7 +575,8 @@ enum DataSegValues {
     DS_loading_wing_commander = 0x0187,
     DS_error_has_occurred = 0x0395,
     shellcode_start = DS_error_has_occurred, // 249 bytes
-    DS_tmpvector = DS_loading_wing_commander, // 100 bytes
+    DS_tmpvector = DS_loading_wing_commander, // 12 bytes
+    DS_mission_loader = DS_loading_wing_commander + 12, // ???
     DS_trampoline = DS_loading_wing_commander + 101, // 6 bytes
     DS_tramp_ret_NOP = DS_trampoline + 3, // NOP instruction we hook into
     //DS_tmpvector = DS_Pos + (12 * 0x3f)
@@ -910,6 +917,45 @@ void apply_despawn(const Despawn &despawn) {
     }
 }
 
+void run_briefing(int missionId, int seriesId) {
+    {
+        CPU_Push16((Bit16u)SegValue(cs));
+        CPU_Push16((Bit16u)reg_eip + 5);
+        Bit8u shellcode[] = {
+            0x55, // push bp
+            0x8B, 0xEC, // mov sp, bp
+            0x56, // push si (original value)
+            0xbe, seriesId & 0xff, seriesId >> 8, // mov si <- ship_id
+            0x56, // push si
+            0xbe, missionId & 0xff, missionId >> 8, // mov si <- ship_id
+            0x56, // push si
+            // call far stub148:005C (j_outerLoadBriefingAnimation)
+            0x9A, 0x5C, 0x00, STUB148 & 0xff, STUB148 >> 8,
+            // call far stub151:0025 (j_loadScrambleAnimation)
+            0x9A, 0x25, 0x00, STUB151 & 0xff, STUB151 >> 8,
+            // pop si, pop si, pop si
+            0x5E, 0x5E, 0x5E,
+            0x5d, // pop bp
+            0xCB // retf
+        };
+        for (int i = 0; i < sizeof(shellcode); i++) {
+            mem_writeb_checked(DS_OFF + DS_mission_loader + i, shellcode[i]);
+        }
+        SegSet16(cs, DS);
+        reg_eip = DS_mission_loader;
+    }
+}
+
+void run_campaign(int missionId, int seriesId) {
+    mem_writeb_checked(DS_OFF + 0xC255, missionId);
+    mem_writeb_checked(DS_OFF + 0xC256, seriesId);
+    CPU_Push16((Bit16u)SegValue(cs));
+    CPU_Push16((Bit16u)reg_eip + 5);
+    SegSet16(cs, STUB161);
+    reg_eip = 0x0039; // runHangarMission
+    //forceBreak = true;
+}
+
 void merge_pending_frame(RemoteClient *sender, const Frame &frame) {
     for (int i = 0; i < frame.update_size(); i++) {
         const ShipUpdate &su = frame.update(i);
@@ -1222,13 +1268,6 @@ public:
     }
 };
 
-// breaks later. not synchronous.
-extern void DEBUG_Enable(bool pressed);
-
-// only in heavy debug;
-extern bool forceBreak;
-
-
 class SpawnEventBuilder {
 public:
     void build_event(Event *ev) {
@@ -1481,18 +1520,9 @@ bool isExecutingFunction(Bit16u stubSeg, Bit16u stubOff) {
     return false;
 }
 
-enum {
-    STUB140 = 0x12ad,
-    STUB141 = 0x12cc,
-    STUB142 = 0x12d4,
-    STUB143 = 0x12d7,
-    STUB144 = 0x12ed,
-    STUB145 = 0x12f2,
-    STUB146 = 0x12fe,
-    STUB147 = 0x130e
-};
-
 extern void setBreakpoint(Bit16u seg, Bit32u off);
+
+bool skipBarracks = false;
 
 void wc_net_check_cpu_hooks() {
     /*{
@@ -1534,6 +1564,26 @@ void wc_net_check_cpu_hooks() {
          reg_eax = 12; // force ephemeral objects to a specific slot
          reg_eip = 0x1ce0; // ovr140 retf
         */
+    }
+    if (skipBarracks && isExecutingFunction(STUB150, 0x00AC)) {
+        skipBarracks = false;
+        reg_eax = 7;
+        reg_eip = 0x1391; // ret
+    }
+    // Skip orchestra...
+    if (SegValue(cs) == SEG001 && reg_eip == 0x04F2) {
+        reg_eip += 5;
+    }
+    if (SegValue(cs) == SEG001 && reg_eip == 0x0512) {
+        char *misenv = getenv("MIS");
+        char *serenv = getenv("SERIES");
+        int miss = atoi(misenv ? misenv : "0");
+        int series = atoi(serenv ? serenv : "1");
+        if (miss != 0 || series != 0) {
+            run_campaign(miss, series);
+            skipBarracks = true;
+            //forceBreak = true;
+        }
     }
     if (SegValue(cs) == DS && reg_eip == DS_tramp_ret_NOP) {
         process_trampoline();

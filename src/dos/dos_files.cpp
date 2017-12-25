@@ -519,10 +519,17 @@ bool DOS_CreateFile(char const * name,Bit16u attributes,Bit16u * entry) {
 	}
 }
 
+extern bool forceBreak;
 bool DOS_OpenFile(char const * name,Bit8u flags,Bit16u * entry) {
 	/* First check for devices */
 	if (flags>2) LOG(LOG_FILES,LOG_ERROR)("Special file open command %X file %s",flags,name);
-	else LOG(LOG_FILES,LOG_NORMAL)("file open command %X file %s",flags,name);
+	else {
+        LOG(LOG_FILES,LOG_NORMAL)("file open command %X file %s",flags,name);
+        /*if (strcmp(name, "CAMP.000")==0 || strcmp(name, "MODULE.000")==0 || strcmp(name, "BRIEFING.000")==0) {
+            forceBreak = true;
+        }*/
+        //if (strcmp(name, "SCRAMBLE.vGA")==0){ forceBreak = true;}
+    }
 
 	DOS_PSP psp(dos.psp());
 	Bit16u attr = 0;

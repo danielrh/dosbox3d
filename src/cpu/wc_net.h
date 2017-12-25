@@ -13,8 +13,8 @@ void go_to_trampoline();
 
 class NetConfig {
 public:
-    char *host;
-    char *portstr;
+    const char *host;
+    const char *portstr;
     uint16_t port;
     NetConfig();
 };
@@ -98,5 +98,23 @@ public:
 };
 
 #define STATIC_ASSERT(expr, message) do { int STATIC_ASSERTION(int[-!(expr)]); } while(0)
+
+enum {
+    SEG000 = 0x1a2, // ida:000
+    SEG001 = 0x560, // ida:3be
+    SEG002 = 0x78c, // ida:5ea
+    STUB140 = 0x12ad, // ida:110B
+    STUB141 = 0x12cc, // ida:112A
+    STUB142 = 0x12d4, // ida:1132
+    STUB143 = 0x12d7,
+    STUB144 = 0x12ed,
+    STUB145 = 0x12f2,
+    STUB146 = 0x12fe,
+    STUB147 = 0x130e,
+    STUB148 = 0x1318,
+    STUB150 = 0x1327,
+    STUB151 = 0x1333,
+    STUB161 = 0x1361
+};
 
 #endif
