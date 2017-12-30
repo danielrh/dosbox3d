@@ -97,6 +97,16 @@ public:
     }
 };
 
+enum WcEntityConstants {
+    WCE_PLAYER_ID = 0,
+    WCE_MIN_PERMANENT_ID = 1,
+    WCE_MAX_PERMANENT_ID = 9,
+    WCE_MIN_TEMPORARY_ID = 10,
+    WCE_MAX_TEMPORARY_ID = 0x3c,
+    WCE_CAMERA_ID = 0x3d,
+    WCE_TEMP_VECTOR_ID = 0x3f
+};
+
 #define STATIC_ASSERT(expr, message) do { int STATIC_ASSERTION(int[-!(expr)]); } while(0)
 
 enum {

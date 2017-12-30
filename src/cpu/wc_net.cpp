@@ -225,7 +225,7 @@ struct ClientState {
         return netToLocalMapping[netid];
     }
     void insert_spawn_id(int netid, int localid) {
-        if (netid < 0 || netid >= 10) {
+        if (netid < WCE_MIN_PERMANENT_ID || netid > WCE_MAX_PERMANENT_ID) {
             fprintf(stderr, "Avoid inserting temporary object %d to %d!\n",
                     netid, localid);
             return;
@@ -285,6 +285,9 @@ ShipUpdate &get_update(Frame &fr, NetworkShipId id) {
 int NetworkShipId::remap_ship_id(int ship_id, bool to_local) {
     if (!client) {
         return ship_id; // server does not remap.
+    }
+    if (ship_id >= WCE_MIN_TEMPORARY_ID && ship_id <= WCE_MAX_TEMPORARY_ID) {
+        return ship_id;
     }
     int ret;
     // mapping of server-sent spawn-ids to return of id generation on client.
@@ -580,7 +583,8 @@ enum DataSegValues {
     DS_trampoline = DS_loading_wing_commander + 101, // 6 bytes
     DS_tramp_ret_NOP = DS_trampoline + 3, // NOP instruction we hook into
     //DS_tmpvector = DS_Pos + (12 * 0x3f)
-    DS_entity_types = 0xBD1A
+    DS_entity_types = 0xBD1A,
+    DS_entity_allocated = 0xACC4
 };
 
 template <class VectorClass>
@@ -616,7 +620,7 @@ void store_vector(const VectorClass &vec, int naddr) {
 }
 
 static NetworkShipId find_first_free_ship_entity() {
-    for (Bit16u i = 1; i < 10; i++) {
+    for (Bit16u i = WCE_MIN_PERMANENT_ID; i <= WCE_MAX_PERMANENT_ID; i++) {
         if (mem_readw(DS_OFF + DS_entity_types + i * 2) == 0) {
             fprintf(stderr, "found free %d [%d->%d]\n", (int)i, NetworkShipId::from_local(i).to_net(), NetworkShipId::from_local(i).to_local());
             return NetworkShipId::from_local(i);
@@ -628,7 +632,7 @@ static NetworkShipId find_first_free_ship_entity() {
 
 /*
 struct SavedShipEntities {
-    Bit16u entities[10];
+    Bit16u entities[WCE_MIN_TEMPORARY_ID];
 };
 std::vector<SavedShipEntities> saved_ship_types;
 static void force_ship_spawn_entity_id(NetworkShipId whichShip) {
@@ -638,7 +642,7 @@ static void force_ship_spawn_entity_id(NetworkShipId whichShip) {
     Bit16u which = whichShip.to_local();
     SavedShipEntities sse;
     memset(&sse, 0, sizeof(sse));
-    for (Bit16u i = 1; i < 10; i++) {
+    for (Bit16u i = 1; i < WCE_MIN_TEMPORARY_ID; i++) {
         Bit32u addr = DS_OFF + DS_entity_types + i * 2;
         sse.entities[i] = mem_readw(addr);
         if (i != which) {
@@ -660,7 +664,7 @@ static void restore_ship_spawn_entities(NetworkShipId whichShip) {
     SavedShipEntities sse = saved_ship_types.back();
     saved_ship_types.pop_back();
     Bit16u which = whichShip.to_local();
-    for (Bit16u i = 1; i < 10; i++) {
+    for (Bit16u i = 1; i < WCE_MIN_TEMPORARY_ID; i++) {
         Bit32u addr = DS_OFF + DS_entity_types + i * 2;
         if (i != which) {
             mem_writew (addr, sse.entities[i]);
@@ -685,7 +689,7 @@ void populate_ship_update(Frame *frame, NetworkShipId ship_id) {
 }
 
 void populate_server_frame(Frame *frame) {
-    for (int i = 0; i < 10; i++) {
+    for (int i = 0; i <= WCE_MAX_PERMANENT_ID; i++) {
         Bit32u addr = DS_OFF + DS_entity_types + i * 2;
         Bit16u typ = mem_readw(addr);
         if (typ != 0) {
@@ -988,7 +992,7 @@ void apply_frame(const Frame &frame, bool applyOwnLocation=false) {
             continue;
         }
         NetworkShipId ship_id = NetworkShipId::from_net(su.ship_id());
-        if (ship_id.to_local() >= 10) {
+        if (ship_id.to_local() >= WCE_MIN_TEMPORARY_ID) {
             continue; // Do not simulate ephemeral objects.
         }
         if (applyOwnLocation || (client && !client->is_authoritative(ship_id)) || (server && ship_id.to_local() != 0)) {
@@ -1024,12 +1028,26 @@ void print_banner() {
 }
 
 void process_network() {
-    /*
+  {
+    fprintf(stderr, "entity-types " );
     for (int i = 0; i <= 0x3f; i++) {
+	if (i == WCE_MIN_TEMPORARY_ID) {
+            fprintf(stderr, "| ");
+	}
         fprintf(stderr, "%02x ", mem_readw(DS_OFF + DS_entity_types + i * 2));
     }
     fprintf(stderr, "\n");
-    */
+  }
+  {
+    fprintf(stderr, "entity-alloc " );
+    for (int i = 0; i <= 0x3f; i++) {
+	if (i == WCE_MIN_TEMPORARY_ID) {
+            fprintf(stderr, "| ");
+	}
+        fprintf(stderr, "%04x ", mem_readw(DS_OFF + DS_entity_allocated + i * 2));
+    }
+    fprintf(stderr, "\n");
+  }
     gFrameNum++;
     //fprintf(stderr, "Start process_network for frame %d\n", gFrameNum);
     static NetworkMessage networkMessage;
@@ -1318,6 +1336,8 @@ public:
     }
 };
 
+static bool forceBreakAlternate = false;
+
 class DespawnEventBuilder {
 public:
     void build_event(Event *ev) {
@@ -1327,8 +1347,14 @@ public:
     }
 
     bool should_hook() {
+        if (client && (Bit16u)mem_readw(DS_OFF + reg_esp + 4) == 65535) {
+            /*if (!forceBreakAlternate) {
+	        forceBreak = true;
+	    }
+            forceBreakAlternate = !forceBreakAlternate;*/
+        }
         NetworkShipId shipid = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
-        return shipid.to_local() < 10;
+        return shipid.to_local() <= WCE_MAX_PERMANENT_ID;
     }
     
     bool should_sync() {
