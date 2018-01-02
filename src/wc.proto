@@ -44,6 +44,8 @@ message Spawn {
 
 message Despawn {
         optional uint32 ship_id = 1;
+        optional uint32 shooter = 2;
+        optional uint32 explode = 3;
 }
 
 message ShipUpdate {

@@ -129,9 +129,9 @@ struct RemoteClient {
     }
 };
 struct ServerState {
-	int listenSocket;
+    int listenSocket;
     typedef std::vector<RemoteClient> ClientVec;
-	ClientVec clients;
+    ClientVec clients;
     std::vector<NetworkShipId> allowedShipIds;
 
     ServerState() {
@@ -175,7 +175,7 @@ struct ServerState {
 } *server;
 
 struct ClientState {
-	int clientSocket;
+    int clientSocket;
     NetworkShipId shipId;
     std::string callsign;
     std::vector<int> netToLocalMapping;
@@ -309,6 +309,22 @@ int NetworkShipId::remap_ship_id(int ship_id, bool to_local) {
     return ret;
 }
 
+int NetworkShipId::getTopLevelParent(int local_id) {
+    Bit16u id = (Bit16u)local_id;
+    if (id == 0xffff) {
+        return local_id;
+    }
+    for (int i = 0; i < 10; i++) {
+        Bit8u parent = mem_readb(DS_OFF + DS_parent_ship + id);
+        if (parent == (Bit8u)id || parent == 0xFF) {
+            return id;
+        }
+        id = (Bit16u)parent;
+    }
+    fprintf(stderr, "Can't find parent for id %d\n", (int)local_id);
+    return local_id;
+}
+
 bool should_simulate_damage(NetworkShipId src, NetworkShipId dst) {
     if (client) {
         return false; //return (src_ship_id == 0 || dst_ship_id == 0);
@@ -334,10 +350,9 @@ bool is_client_authoritative(NetworkShipId sender, NetworkShipId id) {
 
 std::deque<Event> queuedEvents;
 Event gCurrentEvent;
+std::vector<Bit16u> lastObjectMap;
 
 bool isServer = (getenv("WCHOST") == NULL);
-int manualSpawnShip = -1;
-int manualDespawnShip = -1;
 int gFrameNum = 0;
 bool gIgnoreNextProcessNetwork = false;
 bool gIsProcessingTrampoline = false;
@@ -565,28 +580,6 @@ const Bit8u trampoline_code[6] = {
     0xCB //RETF
 };
 
-const int DS = 0x13d3;
-const int DS_OFF = DS * 0x10;
-const Bit8u Instr_RETF = 0xCB;
-enum DataSegValues {
-    DS_Pos = 0xA9C2,
-    DS_Vel = 0xCAE2,
-    DS_Right = 0xAEB6,
-    DS_Up = 0xB1B6,
-    DS_Forward = 0xB4B6,
-    DS_RandomSeed = 0x7728,
-    DS_loading_wing_commander = 0x0187,
-    DS_error_has_occurred = 0x0395,
-    shellcode_start = DS_error_has_occurred, // 249 bytes
-    DS_tmpvector = DS_loading_wing_commander, // 12 bytes
-    DS_mission_loader = DS_loading_wing_commander + 12, // ???
-    DS_trampoline = DS_loading_wing_commander + 101, // 6 bytes
-    DS_tramp_ret_NOP = DS_trampoline + 3, // NOP instruction we hook into
-    //DS_tmpvector = DS_Pos + (12 * 0x3f)
-    DS_entity_types = 0xBD1A,
-    DS_entity_allocated = 0xACC4
-};
-
 template <class VectorClass>
 void populate_vector(VectorClass *vec, int addr, NetworkShipId array_index) {
     return populate_vector(vec, addr + 12 * array_index.to_local());
@@ -617,6 +610,25 @@ void store_vector(const VectorClass &vec, int naddr) {
     mem_writed(faraddr, vec.x());
     mem_writed(faraddr + 0x4, vec.y());
     mem_writed(faraddr + 0x8, vec.z());
+}
+
+static std::vector<Bit16u> get_object_map() {
+    std::vector<Bit16u> ret(WCE_MAX_PERMANENT_ID);
+    for (Bit16u i = WCE_MIN_PERMANENT_ID; i <= WCE_MAX_PERMANENT_ID; i++) {
+        Bit16u type = mem_readw(DS_OFF + DS_entity_types + i * 2);
+        ret[i] = type;
+    }
+    return ret;
+}
+
+static std::pair<Bit16u, Bit16u> get_recently_spawned_type(const std::vector<Bit16u>& oldMap) {
+    std::vector<Bit16u> newMap = get_object_map();
+    for (Bit16u i = WCE_MIN_PERMANENT_ID; i <= WCE_MAX_PERMANENT_ID; i++) {
+        if (newMap[i] && !oldMap[i]) {
+            return std::make_pair(i, newMap[i]);
+        }
+    }
+    return std::make_pair(0, 0);
 }
 
 static NetworkShipId find_first_free_ship_entity() {
@@ -921,6 +933,48 @@ void apply_despawn(const Despawn &despawn) {
     }
 }
 
+void apply_delayed_despawn(const Despawn &despawn) {
+    /*if (!should_simulate_damage(ship_id, ship_id)) {
+        return;
+    }*/
+    if (!despawn.has_ship_id()) {
+        return;
+    }
+    uint32_t source_id = 0xffff;
+    if (despawn.has_shooter()) {
+        NetworkShipId src = NetworkShipId::from_net(despawn.shooter());
+        source_id = src.to_local();
+    }
+    NetworkShipId id = NetworkShipId::from_net(despawn.ship_id());
+    uint32_t ship_id = id.to_local();
+    fprintf(stderr, "\r\napply_despawn(%d->%d)\r\n",
+            id.to_net(), id.to_local());
+    {
+        CPU_Push16((Bit16u)SegValue(cs));
+        CPU_Push16((Bit16u)reg_eip);
+        Bit8u shellcode[] = {
+            0x00, // nul terminate string
+            0x56, // push si (original value)
+            0xbe, ship_id & 0xff, ship_id >> 8, // mov si <- ship_id
+            0x56, // push si
+            0xbe, source_id & 0xff, source_id >> 8, // mov si <- ship_id
+            0x56, // push si
+            // call far 12d7:008E
+            0x9A, 0x8E, 0x00, STUB143 & 0xff, STUB143 >> 8,
+            // pop si, pop si
+            0x5E, 0x5E, 0x5E,
+            //0x61, 0x9D, // pop all regs, pop flags
+            0xCB // retf
+        };
+        for (int i = 0; i < sizeof(shellcode); i++) {
+            mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
+        }
+        SegSet16(cs, DS);
+        reg_eip = shellcode_start + 1;
+        fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
+    }
+}
+
 void run_briefing(int missionId, int seriesId) {
     {
         CPU_Push16((Bit16u)SegValue(cs));
@@ -1031,9 +1085,9 @@ void process_network() {
   {
     fprintf(stderr, "entity-types " );
     for (int i = 0; i <= 0x3f; i++) {
-	if (i == WCE_MIN_TEMPORARY_ID) {
+        if (i == WCE_MIN_TEMPORARY_ID) {
             fprintf(stderr, "| ");
-	}
+        }
         fprintf(stderr, "%02x ", mem_readw(DS_OFF + DS_entity_types + i * 2));
     }
     fprintf(stderr, "\n");
@@ -1041,9 +1095,9 @@ void process_network() {
   {
     fprintf(stderr, "entity-alloc " );
     for (int i = 0; i <= 0x3f; i++) {
-	if (i == WCE_MIN_TEMPORARY_ID) {
+        if (i == WCE_MIN_TEMPORARY_ID) {
             fprintf(stderr, "| ");
-	}
+        }
         fprintf(stderr, "%04x ", mem_readw(DS_OFF + DS_entity_allocated + i * 2));
     }
     fprintf(stderr, "\n");
@@ -1252,7 +1306,7 @@ public:
 class DamageEventBuilder {
 public:
     void build_event(Event *ev) {
-        NetworkShipId src = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
+        NetworkShipId src = NetworkShipId::parent_from_memory_word(DS_OFF + reg_esp + 4);
         NetworkShipId dst = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 6);
         Bit16u quantity = mem_readw(DS_OFF + reg_esp + 8);
         Bit16u vectorAddr = mem_readw(DS_OFF + reg_esp + 10);
@@ -1339,26 +1393,52 @@ public:
 static bool forceBreakAlternate = false;
 
 class DespawnEventBuilder {
+    bool explode;
+
+private:
+    NetworkShipId getShipId() {
+        int offset = explode ? 6 : 4;
+        return NetworkShipId::from_memory_word(DS_OFF + reg_esp + offset);
+    }
+
+    NetworkShipId getSourceId() {
+        if (!explode) {
+            return NetworkShipId::invalid();
+        }
+        return NetworkShipId::parent_from_memory_word(DS_OFF + reg_esp + 4);
+    }
+  
 public:
+    explicit DespawnEventBuilder(bool explode)
+      : explode(explode) {
+    }
+
     void build_event(Event *ev) {
-        NetworkShipId shipid = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
+        NetworkShipId shipid = getShipId();
         Despawn *despawn = ev->mutable_despawn();
         despawn->set_ship_id(shipid.to_net());
+        if (explode) {
+            despawn->set_explode(true);
+            despawn->set_shooter(getSourceId().to_net());
+        }
     }
 
     bool should_hook() {
         if (client && (Bit16u)mem_readw(DS_OFF + reg_esp + 4) == 65535) {
             /*if (!forceBreakAlternate) {
-	        forceBreak = true;
-	    }
+                forceBreak = true;
+            }
             forceBreakAlternate = !forceBreakAlternate;*/
         }
-        NetworkShipId shipid = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
+        NetworkShipId shipid = getShipId();
         return shipid.to_local() <= WCE_MAX_PERMANENT_ID;
     }
     
     bool should_sync() {
-        NetworkShipId shipid = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
+        /*if (explode) {
+            return false;
+        }*/
+        NetworkShipId shipid = getShipId();
         bool isWingmanDeath = server && server->get_client(shipid) != NULL;
         if (isWingmanDeath) {
             fprintf(stderr, "Ignoring wingman death %d\n", shipid.to_net());
@@ -1367,6 +1447,9 @@ public:
     }
 
     bool should_run_locally() {
+        /*if (explode) {
+            return false;
+        }*/
         // FIXME: on client, we try to ignore despawns,
         // but we observe that when server autopilots, and the client autopilots
         // the destruction animation is continuously playing on all faraway
@@ -1377,7 +1460,7 @@ public:
     }
 
     Bit16u ret_addr() {
-        return 0x1ce0;
+        return explode ? 0x0d44 : 0x1ce0;
     }
 
     void debug() {
@@ -1402,48 +1485,20 @@ c - ship
 d - capship
  */
 
-void spawn_ship_hook() {
-    // return -- do not apply damage
-    reg_eax = 0xffffffff;
-    reg_eip = 0x1252; // ovr145 retf
-}
-
-void despawn_ship_hook() {
-    // return -- do not apply damage
-    reg_eip = 0x1ce0; // ovr140 retf
-}
-
-void process_spawn_ship() {
-    // beginning of doDamage.
-    if (manualSpawnShip) {
-        if (manualSpawnShip > 0) {
-            manualSpawnShip--;
-        }
-    } else {
-        spawn_ship_hook();
-    }
-}
-
-void process_despawn_ship() {
-    // beginning of doDamage.
-    NetworkShipId ship = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
-    //fprintf(stderr,"despawn %d\n", ship.to_net());
-
-    if (manualDespawnShip) {
-        if (manualDespawnShip > 0) {
-            manualDespawnShip--;
-        }
-    } else {
-        despawn_ship_hook();
-    }
-}
-
 void process_trampoline() {
     //fprintf(stderr, "Trampoline: start %d\n", (int)queuedEvents.size());
     gIsProcessingTrampoline = true;
     {
         const Event &ev = gCurrentEvent;
         if (ev.has_fire()) {
+            std::pair<Bit16u, Bit16u> idType = get_recently_spawned_type(lastObjectMap);
+            Bit16u id = idType.first;
+            if (idType.second) {
+                if (idType.second != 0x0b) {
+                    fprintf(stderr, "Spawned wrong type %d\n", (int)idType.second);
+                }
+                //newEv.set_ship_id(id);
+            }
             // We just finished applying weapon fire.
             fprintf(stderr, "Trampoline: finished fire\n");
         } else if (ev.has_damage()) {
@@ -1475,8 +1530,10 @@ void process_trampoline() {
             // Finished despawning
             fprintf(stderr, "Trampoline: finished despawn\n");
             const Despawn &despawn = ev.despawn();
-            NetworkShipId id = NetworkShipId::from_net(despawn.ship_id());
-            pendingState.remove_ship(id);
+            if (!despawn.has_explode()) {
+                NetworkShipId id = NetworkShipId::from_net(despawn.ship_id());
+                pendingState.remove_ship(id);
+            }
         } else {
             //fprintf(stderr, "Trampoline: no events finished yet\n");
         }
@@ -1490,11 +1547,14 @@ void process_trampoline() {
         
         if (ev.has_fire()) {
             fprintf(stderr, "Trampoline: starting fire\n");
+            lastObjectMap = get_object_map();
             apply_weapon_fire(ev.fire());
         }
         if (ev.has_damage()) {
             fprintf(stderr, "Trampoline: starting damage\n");
-            apply_damage(ev.damage());
+            /*Cheat mode:if (ev.damage().ship_id() != 0 && ev.damage().ship_id() != 1) {
+                apply_damage(ev.damage());
+            }*/
         }
         if (ev.has_spawn()) {
             fprintf(stderr, "Trampoline: spawn!!!!!!\n");
@@ -1502,7 +1562,11 @@ void process_trampoline() {
         }
         if (ev.has_despawn()) {
             fprintf(stderr, "Trampoline: despawn!!!!!!!\n");
-            apply_despawn(ev.despawn());
+            if (ev.despawn().has_explode()) {
+                apply_delayed_despawn(ev.despawn());
+            } else {
+                apply_despawn(ev.despawn());
+            }
         }
         if (reg_eip != DS_tramp_ret_NOP) {
             if (reg_eip == shellcode_start + 1) {
@@ -1576,13 +1640,17 @@ void wc_net_check_cpu_hooks() {
     if (isExecutingFunction(STUB143, 0x012e)) {
         process_intercepted_event(FireEventBuilder());
     }
+    // delayedDespawn
+    if (isExecutingFunction(STUB143, 0x008e)) {
+        process_intercepted_event(DespawnEventBuilder(true));
+    }
     // outerSpawnShipEntity
     if (isExecutingFunction(STUB145, 0x00b6)) {
         process_intercepted_event(SpawnEventBuilder());
     }
     // despawn
     if (isExecutingFunction(STUB140, 0x01dd)) {
-        process_intercepted_event(DespawnEventBuilder());
+        process_intercepted_event(DespawnEventBuilder(false));
     }
     if (isExecutingFunction(STUB140, 0x0101)) {
         // allocate anon entity

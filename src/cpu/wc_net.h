@@ -6,8 +6,6 @@ void wc_net_check_cpu_hooks();
 void process_network();
 void process_damage();
 void process_fire();
-void process_spawn_ship();
-void process_despawn_ship();
 
 void go_to_trampoline();
 
@@ -63,6 +61,12 @@ public:
         return NetworkShipId(remap_ship_id(id, false));
     }
 
+    static NetworkShipId from_top_level_local(int id) {
+        return from_local(NetworkShipId::getTopLevelParent(id));
+    }
+
+    static int getTopLevelParent(int local_id);
+    
     static NetworkShipId from_net(int id) {
         return NetworkShipId(id);
     }
@@ -71,6 +75,12 @@ public:
         Bit16u id = -1;
         mem_readw_checked(addr, &id);
         return NetworkShipId::from_local(id);
+    }
+
+    static NetworkShipId parent_from_memory_word(int addr) {
+        Bit16u id = -1;
+        mem_readw_checked(addr, &id);
+        return NetworkShipId::from_local(getTopLevelParent(id));
     }
 
     bool is_invalid() const {
@@ -125,6 +135,31 @@ enum {
     STUB150 = 0x1327,
     STUB151 = 0x1333,
     STUB161 = 0x1361
+};
+
+enum {
+    DS = 0x13d3,
+    DS_OFF = DS * 0x10,
+    Instr_RETF = 0xCB
+};
+enum DataSegValues {
+    DS_Pos = 0xA9C2,
+    DS_Vel = 0xCAE2,
+    DS_Right = 0xAEB6,
+    DS_Up = 0xB1B6,
+    DS_Forward = 0xB4B6,
+    DS_RandomSeed = 0x7728,
+    DS_loading_wing_commander = 0x0187,
+    DS_error_has_occurred = 0x0395,
+    shellcode_start = DS_error_has_occurred, // 249 bytes
+    DS_tmpvector = DS_loading_wing_commander, // 12 bytes
+    DS_mission_loader = DS_loading_wing_commander + 12, // ???
+    DS_trampoline = DS_loading_wing_commander + 101, // 6 bytes
+    DS_tramp_ret_NOP = DS_trampoline + 3, // NOP instruction we hook into
+    //DS_tmpvector = DS_Pos + (12 * 0x3f)
+    DS_parent_ship = 0xC30E,
+    DS_entity_types = 0xBD1A,
+    DS_entity_allocated = 0xACC4
 };
 
 #endif
