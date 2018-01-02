@@ -1589,9 +1589,9 @@ void process_trampoline() {
         }
         if (ev.has_damage()) {
             fprintf(stderr, "Trampoline: starting damage\n");
-            /*Cheat mode:if (ev.damage().ship_id() != 0 && ev.damage().ship_id() != 1) {
-                apply_damage(ev.damage());
-            }*/
+            //Cheat mode:if (ev.damage().ship_id() != 0 && ev.damage().ship_id() != 1) {
+            apply_damage(ev.damage());
+            //}
         }
         if (ev.has_spawn()) {
             fprintf(stderr, "Trampoline: spawn!!!!!!\n");
