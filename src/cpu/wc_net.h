@@ -36,35 +36,35 @@ struct RecvStatus {
         return _ok;
     }
 };
+
 class NetworkShipId {
-    int id;
+    uint16_t mission_ship_id;
+    uint16_t situation_id;
+    int local_ship_id; // defaults to one
+    static NetworkShipId remap_ship_id_to_net(int ship_id);
+    static int remap_ship_id_to_local(NetworkShipId);
 
-    static int remap_ship_id(int ship_id, bool to_local);
-
-    explicit NetworkShipId(int id)
-        : id(id) {
-        if (id < 0) {
-            fprintf(stderr, "Negative ship id found %d\n", id);
-            //id = 0x3f;
-        }
-        if (id >= 0x3d) {
-            fprintf(stderr, "Too large ship id found %d\n", id);
-            //id = 0x3f;
-        }
+    NetworkShipId(uint16_t spawned_mission_ship_id, uint16_t spawned_situation_id)
+        : mission_ship_id(spawned_mission_ship_id), situation_id(spawned_situation_id), local_ship_id(-1) {
     }
-
+    static NetworkShipId make_invalid(int local_ship_id) {
+        NetworkShipId ret(0xffff, 0xffff);
+        ret.local_ship_id = -1;
+        return ret;
+    }
 public:
 
-    static NetworkShipId invalid() {
-        return NetworkShipId(-1);
-    }
-    
     static NetworkShipId from_local(int id) {
-        return NetworkShipId(remap_ship_id(id, false));
+        return remap_ship_id_to_net(id);
     }
-
-    static NetworkShipId from_net(int id) {
-        return NetworkShipId(id);
+    static NetworkShipId server_wingleader_id() {
+        return from_net(1, 0);
+    }
+    static NetworkShipId client_wingman_id() {
+        return from_net(2, 0);
+    }
+    static NetworkShipId from_net(uint16_t mission_ship_id, uint16_t situation_id) {
+        return NetworkShipId(mission_ship_id, situation_id);
     }
 
     static NetworkShipId from_memory_word(int addr) {
@@ -73,27 +73,59 @@ public:
         return NetworkShipId::from_local(id);
     }
 
-    bool is_invalid() const {
-        return id < 0 || id >= 0x3d;
+    bool is_temporary_effect() const {
+        return mission_ship_id == 0xffff && situation_id == 0xffff;
     }
 
     int to_local() const {
-        return remap_ship_id(id, true);
+        if (local_ship_id != -1 ) {
+            return local_ship_id;
+        }
+        return remap_ship_id_to_local(*this);
     }
-    int to_net() const {
-        return id;
+    uint16_t to_net_situation_id() const {
+        if(is_temporary_effect()) {
+            abort();
+        }
+        return situation_id;
+    }
+    uint16_t to_net_mission_ship_id() const {
+        if(is_temporary_effect()) {
+            abort();
+        }
+        return mission_ship_id;
     }
 
     bool operator== (const NetworkShipId &other) const {
-        return id == other.id;
+        if (is_temporary_effect()) {
+            return local_ship_id == other.local_ship_id;
+        }
+        return mission_ship_id == other.mission_ship_id && 
+            situation_id == other.situation_id;
     }
 
     bool operator!= (const NetworkShipId &other) const {
-        return id != other.id;
+        return !(*this == other);
     }
 
     bool operator< (const NetworkShipId &other) const {
-        return id < other.id;
+        uint64_t a = mission_ship_id;
+        uint64_t b = other.mission_ship_id;
+        a <<= 16;
+        b <<= 16;
+        a|= situation_id;
+        b|= other.situation_id;
+        a<<=32;
+        b<<=32;
+        if (is_temporary_effect()) {
+            a = 0;
+            a ^= (uint32_t)local_ship_id;
+        }
+        if (other.is_temporary_effect()) {
+            b = 0;
+            b ^= (uint32_t)local_ship_id;
+        }
+        return a < b;
     }
 };
 

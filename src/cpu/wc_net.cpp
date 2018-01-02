@@ -136,12 +136,12 @@ struct ServerState {
 
     ServerState() {
         listenSocket = -1;
-        allowedShipIds.push_back(NetworkShipId::from_net(1));
-        allowedShipIds.push_back(NetworkShipId::from_net(3));
+        allowedShipIds.push_back(NetworkShipId::client_wingman_id());
+        //allowedShipIds.push_back(NetworkShipId::from_net(3, 0));
     }
 
     RemoteClient *get_client(NetworkShipId id) {
-        int ship_id = id.to_net();
+        int ship_id = id.to_local();
         if (ship_id >= clients.size()) {
             return NULL;
         }
@@ -153,9 +153,12 @@ struct ServerState {
 
     RemoteClient *create_client() {
         for (std::vector<NetworkShipId>::const_iterator it = allowedShipIds.begin(), ite = allowedShipIds.end(); it != ite; ++it) {
-            int ship_id = it->to_net();
+            int ship_id = it->to_local();
+            if (ship_id < 0) {
+                return NULL;
+            }
             while (ship_id >= clients.size()) {
-                clients.push_back(RemoteClient(NetworkShipId::from_net(clients.size())));
+                clients.push_back(RemoteClient(NetworkShipId::from_local(clients.size())));
             }
             if (clients[ship_id].is_disconnected()) {
                 return &clients[ship_id];
@@ -282,19 +285,20 @@ ShipUpdate &get_update(Frame &fr, NetworkShipId id) {
     return *ret;
 }
 
-int NetworkShipId::remap_ship_id(int ship_id, bool to_local) {
-    if (!client) {
-        return ship_id; // server does not remap.
+NetworkShipId NetworkShipId::remap_ship_id_to_net(int ship_id) {
+    if (!server && !client) {
+        return NetworkShipId::make_invalid; // server does not remap.
     }
     if (ship_id >= WCE_MIN_TEMPORARY_ID && ship_id <= WCE_MAX_TEMPORARY_ID) {
-        return ship_id;
+        return NetworkShipId::make_invalid;
     }
-    int ret;
+    NetworkShipId ret;
     // mapping of server-sent spawn-ids to return of id generation on client.
-    if (to_local) {
-        ret = client->net_to_local(ship_id);
-    } else {
+    if (client) {
         ret = client->local_to_net(ship_id);
+    }
+    if (server) {
+        ret = server->local_to_net(ship_id);
     }
     if (ship_id == 0) {
         if (ret != client->shipId.to_net()) {
@@ -1224,7 +1228,7 @@ public:
     bool should_sync() {
         NetworkShipId src = NetworkShipId::from_memory_word(DS_OFF + reg_esp + 4);
         if (server) {
-            return server->get_client(src) == NULL;
+            return server->get_client(src.to_local()) == NULL;
         } else if (client) {
             return src == client->shipId;
         }
