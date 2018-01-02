@@ -33,6 +33,7 @@ message Damage {
 message WeaponFire {
         optional uint32 gun_id = 1; // 4 bits
         optional uint32 shooter = 2;
+        optional uint32 ship_id = 3; // if missile, which id?
 }
 
 message Spawn {

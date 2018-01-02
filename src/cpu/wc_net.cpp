@@ -348,8 +348,27 @@ bool is_client_authoritative(NetworkShipId sender, NetworkShipId id) {
     return sender == id;
 }
 
-std::deque<Event> queuedEvents;
-Event gCurrentEvent;
+class QueuedEvent {
+public:
+    Event ev;
+    bool shouldSync;
+
+    QueuedEvent()
+        : shouldSync(false) {
+    }
+
+    QueuedEvent(Event ev)
+        : ev(ev), shouldSync(false) {
+    }
+
+    QueuedEvent(Event ev, bool shouldSync)
+        : ev(ev), shouldSync(shouldSync) {
+    }
+};
+
+std::deque<QueuedEvent> queuedEvents;
+QueuedEvent gCurrentEvent;
+bool gSyncCurrentEvent;
 std::vector<Bit16u> lastObjectMap;
 
 bool isServer = (getenv("WCHOST") == NULL);
@@ -1028,14 +1047,18 @@ void merge_pending_frame(RemoteClient *sender, const Frame &frame) {
             }
         }
     }
+    /*
     for (int i = 0; i < frame.event_size(); i++) {
         const Event &event = frame.event(i);
         // FIXME: Check that the ship is authoritive
         *pendingState.frame().add_event() = event;
     }
+    */
     for (int i = 0; i < frame.event_size(); i++) {
         const Event &ev = frame.event(i);
-        queuedEvents.push_back(ev);
+        std::string debug = ev.DebugString();
+        fprintf(stderr, "Merged event %s\n", debug.c_str());
+        queuedEvents.push_back(QueuedEvent(ev, true));
     }
 }
 
@@ -1082,6 +1105,7 @@ void print_banner() {
 }
 
 void process_network() {
+    /*
   {
     fprintf(stderr, "entity-types " );
     for (int i = 0; i <= 0x3f; i++) {
@@ -1102,6 +1126,7 @@ void process_network() {
     }
     fprintf(stderr, "\n");
   }
+    */
     gFrameNum++;
     //fprintf(stderr, "Start process_network for frame %d\n", gFrameNum);
     static NetworkMessage networkMessage;
@@ -1242,20 +1267,22 @@ void process_intercepted_event(EventBuilder builder) {
             assert(false);
         }
         if (builder.should_run_locally()) {
-            queuedEvents.push_back(Event());
-            builder.build_event(&queuedEvents.back());
+            if (!queuedEvents.empty()) {
+                fprintf(stderr, "Multiple queued events during building.\n");
+            }
+            queuedEvents.push_back(QueuedEvent(Event(), builder.should_sync()));
+            builder.build_event(&queuedEvents.back().ev);
             go_to_trampoline();
         } else {
             // if we go in here, dosbox will return and NOT EXECUTE the fire.
             // return -- do not apply damage
             reg_eip = builder.ret_addr(); //ovr143
-        }
-        
-        if (builder.should_sync()) {
-            Event *ev = pendingState.frame().add_event();
-            builder.build_event(ev);
-            std::string debug = ev->DebugString();
-            fprintf(stderr, "Added event %s\n", debug.c_str());
+            if (builder.should_sync()) {
+                Event *ev = pendingState.frame().add_event();
+                builder.build_event(ev);
+                std::string debug = ev->DebugString();
+                fprintf(stderr, "Added pending event %s\n", debug.c_str());
+            }
         }
     }
 }
@@ -1294,12 +1321,7 @@ public:
     }
 
     void debug() {
-        /*
-        fprintf(stderr, "\r\ndoDamage%s(%d->%d, %d->%d, %d, <%d, %d, %d>) rng=%x\r\n",
-                shouldSim ? "[added-to-pending-frame]" : "[not-sent]",
-                NetworkShipId::from_net(src).to_net(), src.to_local(), dst.to_net(), dst.to_local(),
-                quantity, vec->x(), vec->y(), vec->z(), randomSeed);
-        */
+        fprintf(stderr, "fire: %d %d %d %d\n", gIsProcessingTrampoline, should_hook(), should_sync(), should_run_locally());
     }
 };
 
@@ -1343,17 +1365,11 @@ public:
 class SpawnEventBuilder {
 public:
     void build_event(Event *ev) {
-        NetworkShipId shipid = find_first_free_ship_entity();
-        if (shipid.is_invalid()) {
-            fprintf(stderr, "Bad: IS INVALID AFTER SPAWN!!!");
-            return;
-        }
         Bit16u missionShipId = mem_readw(DS_OFF + reg_esp + 4);
         Bit16u situationId = mem_readw(DS_OFF + reg_esp + 6); // index into navpoint
         Bit32u randomSeed = mem_readd(DS_OFF + DS_RandomSeed);
         Spawn *spawn = ev->mutable_spawn();
-        spawn->set_ship_id(shipid.to_net());
-        fprintf(stderr, "set spawn ship [%d->%d]\n", shipid.to_net(), shipid.to_local());
+        fprintf(stderr, "set spawn ship\n");
         spawn->set_mission_ship_id(missionShipId);
         spawn->set_situation_id(situationId);
         spawn->set_seed(randomSeed);
@@ -1489,36 +1505,54 @@ void process_trampoline() {
     //fprintf(stderr, "Trampoline: start %d\n", (int)queuedEvents.size());
     gIsProcessingTrampoline = true;
     {
-        const Event &ev = gCurrentEvent;
+        Event &ev = gCurrentEvent.ev;
         if (ev.has_fire()) {
             std::pair<Bit16u, Bit16u> idType = get_recently_spawned_type(lastObjectMap);
-            Bit16u id = idType.first;
+            Bit16u chosenShip = idType.first;
+            // We just finished applying weapon fire.
+            fprintf(stderr, "Trampoline: finished fire %d\n", (int)chosenShip);
             if (idType.second) {
                 if (idType.second != 0x0b) {
                     fprintf(stderr, "Spawned wrong type %d\n", (int)idType.second);
                 }
-                //newEv.set_ship_id(id);
+                const WeaponFire &fire = ev.fire();
+                if (fire.has_ship_id()) {
+                    if (client) {
+                        client->insert_spawn_id(fire.ship_id(), chosenShip);
+                    }
+                    NetworkShipId id = NetworkShipId::from_net(fire.ship_id());
+                    NetworkShipId returnId = NetworkShipId::from_local(chosenShip);
+                    if (id != returnId) {
+                        fprintf(stderr, "Info: Wanted to spawn %d but spawned %d\n",
+                                id.to_local(), returnId.to_local());
+                    }
+                    //restore_ship_spawn_entities(id);
+                } else if (gCurrentEvent.shouldSync) {
+                    ev.mutable_fire()->set_ship_id(chosenShip);
+                }
             }
-            // We just finished applying weapon fire.
-            fprintf(stderr, "Trampoline: finished fire\n");
+            //pendingState.add_ship(spawn);
         } else if (ev.has_damage()) {
             // We just finished dealing damage.
             fprintf(stderr, "Trampoline: finished damage\n");
         } else if (ev.has_spawn()) {
             // Finished spawning
-            fprintf(stderr, "Trampoline: finished spawn %d\n", reg_eax & 0xffff);
+            int chosenShip = reg_eax & 0xffff;
+            fprintf(stderr, "Trampoline: finished spawn %d\n", chosenShip);
             const Spawn &spawn = ev.spawn();
             if (spawn.has_ship_id()) {
                 if (client) {
-                    client->insert_spawn_id(spawn.ship_id(), reg_eax & 0xffff);
+                    client->insert_spawn_id(spawn.ship_id(), chosenShip);
                 }
                 NetworkShipId id = NetworkShipId::from_net(spawn.ship_id());
-                NetworkShipId returnId = NetworkShipId::from_local(reg_eax & 0xffff);
+                NetworkShipId returnId = NetworkShipId::from_local(chosenShip);
                 if (id != returnId) {
                     fprintf(stderr, "Info: Wanted to spawn %d but spawned %d\n",
                             id.to_local(), returnId.to_local());
                 }
                 //restore_ship_spawn_entities(id);
+            } else if (gCurrentEvent.shouldSync) {
+                ev.mutable_spawn()->set_ship_id(chosenShip);
             }
             pendingState.add_ship(spawn);
             if (!queuedEvents.empty()) {
@@ -1537,13 +1571,21 @@ void process_trampoline() {
         } else {
             //fprintf(stderr, "Trampoline: no events finished yet\n");
         }
+        if (gCurrentEvent.shouldSync) {
+            *pendingState.frame().add_event() = ev;
+            std::string debug = ev.DebugString();
+            fprintf(stderr, "Added event [%s]\n", debug.c_str());
+            gCurrentEvent.shouldSync = false;
+        }
     }
 
     while (!queuedEvents.empty()) {
         gCurrentEvent = queuedEvents.front();
         queuedEvents.pop_front();
+        std::string debug = gCurrentEvent.ev.DebugString();
+        fprintf(stderr, "tramp event %d %s\n", (int)queuedEvents.size(), debug.c_str());
 
-        const Event &ev = gCurrentEvent;
+        const Event &ev = gCurrentEvent.ev;
         
         if (ev.has_fire()) {
             fprintf(stderr, "Trampoline: starting fire\n");
@@ -1552,9 +1594,9 @@ void process_trampoline() {
         }
         if (ev.has_damage()) {
             fprintf(stderr, "Trampoline: starting damage\n");
-            /*Cheat mode:if (ev.damage().ship_id() != 0 && ev.damage().ship_id() != 1) {
+            /*Cheat mode:*/if (ev.damage().ship_id() != 0 && ev.damage().ship_id() != 1) {
                 apply_damage(ev.damage());
-            }*/
+            }
         }
         if (ev.has_spawn()) {
             fprintf(stderr, "Trampoline: spawn!!!!!!\n");
@@ -1582,7 +1624,7 @@ void process_trampoline() {
         }
     }
     // We have finished executing all events.
-    gCurrentEvent.Clear();
+    gCurrentEvent = QueuedEvent();
 
     // Now anything else to execute after processing all events this frame
     //fprintf(stderr, "Finished processing events for frame %d\n", gFrameNum);
