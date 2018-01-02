@@ -212,6 +212,15 @@ struct ClientState {
         fprintf(stderr, "Failed to find local_to_net %d!\n", localid);
         return localid;
     }
+    bool is_mapped(int netid) {
+        if (netid < 0 || netid >= netToLocalMapping.size()) {
+            return false;
+        }
+        if (netToLocalMapping[netid] == -1) {
+            return false;
+        }
+        return true;
+    }
     int net_to_local(int netid) {
         // Don't interact with NetworkShipId objects in here.
         if (netid < 0 || netid >= netToLocalMapping.size()) {
@@ -241,6 +250,16 @@ struct ClientState {
         }
     }
 } *client;
+
+bool is_net_id_mapped(int net_id) {
+    if (server) {
+        return true;
+    }
+    if (client) {
+        return client->is_mapped(net_id);
+    }
+    return false;
+}
 
 struct PendingState {
     NetworkMessage frameMessage;
@@ -718,6 +737,12 @@ void apply_ship_update_location(const ShipUpdate &su) {
     if (!su.has_ship_id()) {
         return;
     }
+    if (!is_net_id_mapped(su.ship_id())) {
+        fprintf(stderr, "\r\nignore apply_ship_update_location for (%d->unknown)\r\n",
+                su.ship_id());
+        return;
+    }
+
     NetworkShipId ship_id = NetworkShipId::from_net(su.ship_id());
     if (!su.has_loc()) {
         return;
@@ -737,6 +762,12 @@ void apply_ship_update_location(const ShipUpdate &su) {
 }
 
 void apply_damage(const Damage &dam) {
+    if (!is_net_id_mapped(dam.ship_id())) {
+        fprintf(stderr, "\r\nignore apply_damage for (%d->unknown)\r\n",
+                dam.ship_id());
+        return;
+    }
+
     NetworkShipId ship_id = NetworkShipId::from_net(dam.ship_id());
     int dam_src = -1;
     if (dam.has_shooter()) {
@@ -813,6 +844,12 @@ void apply_weapon_fire(const WeaponFire &fire) {
     /*if (!should_simulate_damage(ship_id, ship_id)) {
         return;
     }*/
+    if (!is_net_id_mapped(fire.shooter())) {
+        fprintf(stderr, "\r\nignore apply_weapon_fire for (%d->unknown)\r\n",
+                fire.shooter());
+        return;
+    }
+
     NetworkShipId id = NetworkShipId::from_net(fire.shooter());
     uint32_t gun_id = 0;
     if (fire.has_gun_id()) {
