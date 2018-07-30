@@ -1058,7 +1058,7 @@ void merge_pending_frame(RemoteClient *sender, const Frame &frame) {
         const Event &ev = frame.event(i);
         std::string debug = ev.DebugString();
         fprintf(stderr, "Merged event %s\n", debug.c_str());
-        queuedEvents.push_back(QueuedEvent(ev, true));
+        queuedEvents.push_back(QueuedEvent(ev, false));
     }
 }
 
@@ -1277,14 +1277,13 @@ void process_intercepted_event(EventBuilder builder) {
             // if we go in here, dosbox will return and NOT EXECUTE the fire.
             // return -- do not apply damage
             reg_eip = builder.ret_addr(); //ovr143
-        }
             if (builder.should_sync()) {
                 Event *ev = pendingState.frame().add_event();
                 builder.build_event(ev);
                 std::string debug = ev->DebugString();
                 fprintf(stderr, "Added pending event %s\n", debug.c_str());
             }
-        
+        }        
     }
 }
 
@@ -1516,7 +1515,6 @@ void process_trampoline() {
                 if (idType.second != 0x0b) {
                     fprintf(stderr, "Spawned wrong type %d\n", (int)idType.second);
                 }
-                /*
                 const WeaponFire &fire = ev.fire();
                 if (fire.has_ship_id()) {
                     if (client) {
@@ -1531,7 +1529,7 @@ void process_trampoline() {
                     //restore_ship_spawn_entities(id);
                 } else if (gCurrentEvent.shouldSync) {
                     ev.mutable_fire()->set_ship_id(chosenShip);
-                    }*/
+                }
             }
             //pendingState.add_ship(spawn);
         } else if (ev.has_damage()) {
@@ -1573,7 +1571,7 @@ void process_trampoline() {
         } else {
             //fprintf(stderr, "Trampoline: no events finished yet\n");
         }
-        if (false && gCurrentEvent.shouldSync) {
+        if (gCurrentEvent.shouldSync) {
             *pendingState.frame().add_event() = ev;
             std::string debug = ev.DebugString();
             fprintf(stderr, "Added event [%s]\n", debug.c_str());
