@@ -1047,18 +1047,18 @@ void merge_pending_frame(RemoteClient *sender, const Frame &frame) {
             }
         }
     }
-    
+    /*
     for (int i = 0; i < frame.event_size(); i++) {
         const Event &event = frame.event(i);
         // FIXME: Check that the ship is authoritive
         *pendingState.frame().add_event() = event;
     }
-    
+    */
     for (int i = 0; i < frame.event_size(); i++) {
         const Event &ev = frame.event(i);
         std::string debug = ev.DebugString();
         fprintf(stderr, "Merged event %s\n", debug.c_str());
-        queuedEvents.push_back(QueuedEvent(ev, false));
+        queuedEvents.push_back(QueuedEvent(ev, true));
     }
 }
 
@@ -1101,6 +1101,21 @@ void print_banner() {
             "=========================================================\n"
             "=========--------------- SERVER ----------------=========\n"
             "=========================================================\n\n");
+    }
+}
+
+bool gSendFrameAtEndOfTrampoline = false;
+void flush_outgoing_frame() {
+    if (gSendFrameAtEndOfTrampoline) {
+        gSendFrameAtEndOfTrampoline = false;
+        for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
+            if (!c->is_disconnected()) {
+                if (!send_msg(c->clientSocket, pendingState.frameMessage).ok()) { // Frame
+                    c->disconnect();
+                }
+            }
+        }
+        pendingState.frameMessage.Clear();
     }
 }
 
@@ -1167,14 +1182,7 @@ void process_network() {
             }
         }
         apply_frame(pendingState.frame());
-        for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
-            if (!c->is_disconnected()) {
-                if (!send_msg(c->clientSocket, pendingState.frameMessage).ok()) { // Frame
-                    c->disconnect();
-                }
-            }
-        }
-        pendingState.frameMessage.Clear();
+        gSendFrameAtEndOfTrampoline = true;
         while (!server->clients.empty()) {
             if (server->clients.back().is_disconnected())  {
                 server->clients.pop_back();
@@ -1182,7 +1190,7 @@ void process_network() {
                 break;
             }
         }
-        while (true) {
+        while (true) { // TODO: functionalize: check for newly connecting clients
             int flags = fcntl(server->listenSocket, F_GETFL, 0);
             if (server->clients.empty()) {
                 fcntl(server->listenSocket, F_SETFL, flags & ~O_NONBLOCK);
@@ -1200,6 +1208,7 @@ void process_network() {
             }
             flags = fcntl(server->listenSocket, F_GETFL, 0);
             fcntl(server->listenSocket, F_SETFL, flags & ~O_NONBLOCK);
+            flush_outgoing_frame();
             if (!recv_msg<&NetworkMessage::has_connect>(s, networkMessage).ok()) {
                 really_close(s);
                 break;
@@ -1629,6 +1638,10 @@ void process_trampoline() {
     // Now anything else to execute after processing all events this frame
     //fprintf(stderr, "Finished processing events for frame %d\n", gFrameNum);
     gIsProcessingTrampoline = false;
+    if (!gSendFrameAtEndOfTrampoline) {
+        fprintf(stderr, "[Soft-ASSERT] We expect every trampoline-end to trigger a send-to-clients\n");
+    }
+    flush_outgoing_frame();
 }
 
 void go_to_trampoline() {
