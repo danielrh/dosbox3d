@@ -123,6 +123,7 @@ enum {
     SEG000 = 0x1a2, // ida:000
     SEG001 = 0x560, // ida:3be
     SEG002 = 0x78c, // ida:5ea
+    STUB133 = 0x1266, // ida:10C4
     STUB140 = 0x12ad, // ida:110B
     STUB141 = 0x12cc, // ida:112A
     STUB142 = 0x12d4, // ida:1132
