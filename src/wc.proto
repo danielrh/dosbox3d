@@ -67,12 +67,20 @@ enum AutoPilotState {
      Engaged = 1;
      Finished = 2;
 }
+
+message AutoPilotEvent {
+   optional uint32 cam_ship_type = 1;
+   optional uint32 cam_ship_target = 2;
+   optional uint32 x = 3;
+}
+
 message Event {
   optional string chat = 1;
   optional Spawn spawn = 2;
   optional Damage damage = 3;
   optional WeaponFire fire = 4;
   optional Despawn despawn = 5;
+  optional AutoPilotEvent autopiloting = 16;
 }
 
 message Frame {

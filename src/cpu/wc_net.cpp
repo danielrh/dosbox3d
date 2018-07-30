@@ -859,6 +859,41 @@ void apply_damage(const Damage &dam) {
     }
 }
 
+
+void apply_autopiloting(const AutoPilotEvent &ape) {
+    fprintf(stderr, "\r\napply_autopiloting(0x%x, 0x%x, 0x%x)\r\n",
+            ape.cam_ship_type(), ape.cam_ship_target(), ape.x());
+    {
+        CPU_Push16((Bit16u)SegValue(cs));
+        CPU_Push16((Bit16u)reg_eip);
+        Bit8u shellcode[] = {
+            0x00, // nul terminate string
+            // push flags,
+            //0x9C, //PUSHF
+            //push all regs, xor si,si, push si
+            //0x60, //PUSHA
+            0x56, // push si (original value)
+            0xbe, ape.x() & 0xff, ape.x() >> 8 ,// mov si <- x
+            0x56, // push si
+            0xbe, ape.cam_ship_target() & 0xff, ape.cam_ship_target() >> 8 ,// mov si <- cam_ship_target
+            0x56, // push si
+            0xbe, ape.cam_ship_type() & 0xff, ape.cam_ship_type() >> 8 , // mov si <- cam_ship_type
+            0x56, // push si
+            // call far 12d7:012E
+            0x9A, 0x25, 0x00, STUB133 & 0xff, STUB133 >> 8,
+            // pop si, pop si, pop si, pop si
+            0x5E, 0x5E, 0x5E, 0x5E,
+            //0x61, 0x9D, // pop all regs, pop flags
+            0xCB // retf
+        };
+        for (int i = 0; i < sizeof(shellcode); i++) {
+            mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
+        }
+        SegSet16(cs, DS);
+        reg_eip = shellcode_start + 1;
+        fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
+    }    
+}
 void apply_weapon_fire(const WeaponFire &fire) {
     /*if (!should_simulate_damage(ship_id, ship_id)) {
         return;
@@ -1289,6 +1324,15 @@ void process_network() {
             uninit_network();
             return;
         }
+        if (networkMessage.frame().autopiloting() == Engaged && networkMessage.frame().event().size() != 0) {
+            CPU_Push16((Bit16u)SegValue(cs));
+            CPU_Push16((Bit16u)reg_eip);
+            queuedEvents.push_back(QueuedEvent(networkMessage.frame().event(0), false));
+            go_to_trampoline();
+            // After trampoline, we will return to the start of process_network.
+            gIgnoreNextProcessNetwork = false;
+            return;
+        }
         apply_frame(networkMessage.frame());
     }
 
@@ -1296,7 +1340,7 @@ void process_network() {
     CPU_Push16((Bit16u)SegValue(cs));
     CPU_Push16((Bit16u)reg_eip);
     go_to_trampoline();
-    // After trampoline, we will return to the start of process_network.
+    // After trampoline, we will return to the start of process_network unless true is set here
     gIgnoreNextProcessNetwork = true;
 }
 
@@ -1656,6 +1700,9 @@ void process_trampoline() {
                 apply_despawn(ev.despawn());
             }
         }
+        if (ev.has_autopiloting()) {
+            apply_autopiloting(ev.autopiloting());
+        }
         if (reg_eip != DS_tramp_ret_NOP) {
             if (reg_eip == shellcode_start + 1) {
                 fprintf(stderr, "Trampoline: Starting next bounce\n");
@@ -1688,6 +1735,19 @@ void go_to_trampoline() {
     SegSet16(cs, DS);
     reg_eip = DS_trampoline;
 }
+bool isExecutingOverlay(Bit16u stubSeg, Bit16u stubOff) {
+    Bit8u instType = mem_readb(stubSeg * 0x10 + stubOff);
+    if (instType != 0xea) {
+        return false;
+    }
+    Bit16u realOff = mem_readw(stubSeg * 0x10 + stubOff + 1);
+    Bit16u realSeg = mem_readw(stubSeg * 0x10 + stubOff + 3);
+    if (SegValue(cs) == realSeg) {
+        return true;
+    }
+    return false;
+}
+
 
 bool isExecutingFunction(Bit16u stubSeg, Bit16u stubOff) {
     Bit8u instType = mem_readb(stubSeg * 0x10 + stubOff);
@@ -1759,6 +1819,46 @@ void wc_net_check_cpu_hooks() {
     // Skip orchestra...
     if (SegValue(cs) == SEG001 && reg_eip == 0x04F2) {
         reg_eip += 5;
+    }
+    
+    if (isExecutingOverlay(STUB133, 0x2a) && (
+            /*reg_eip == 0x1e7
+              || reg_eip == 0x2f0*/reg_eip == 0x030b)) { // 0x2a is the doAutopilot stub
+        //static bool val = true;
+        //forceBreak = val;
+        //val = !val;
+    }
+    if (isExecutingOverlay(STUB133, 0x2a) && (
+            /*reg_eip == 0x1e7
+              || reg_eip == 0x2f0*/reg_eip == 0x3)) { // 0x2a is the doAutopilot stub
+        // we have just pushed bp and copied sp into bp
+        // now we want to ingest the arguments that have been passed to the animation fucnction
+        if (server) { 
+            Bit16u cam_ship_type = 0xc;
+            mem_readw_checked(DS_OFF + reg_ebp + 0x6, &cam_ship_type);
+            Bit16u cam_ship_target = 0x0;
+            mem_readw_checked(DS_OFF + reg_ebp + 0x8, &cam_ship_target);
+            Bit16u x = 0; // value of 0x78 in one sample
+            mem_readw_checked(DS_OFF + reg_ebp + 0xa, &x);
+            NetworkMessage msg;
+            Frame *frame = msg.mutable_frame();
+            AutoPilotEvent * ape = frame->add_event()->mutable_autopiloting();
+            frame->set_autopiloting(Engaged);
+            ape->set_cam_ship_type(cam_ship_type);
+            ape->set_cam_ship_target(cam_ship_target);
+            ape->set_x(x);
+            for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
+                if (!c->is_disconnected()) {
+                    if (!send_msg(c->clientSocket, msg).ok()) { // Frame
+                        c->disconnect();
+                    }
+                }
+            }
+        }
+        /*
+        static bool val = true;
+        forceBreak = val;
+        val = !val;*/
     }
     if (SegValue(cs) == SEG001 && reg_eip == 0x0512) {
         char *misenv = getenv("MIS");
