@@ -1,3 +1,8 @@
+====
+The purpose of this branch is to help the missiles have the correct ship id and possibly to find the missile's target or
+guidance abilities so the client and server know how to sync the position. The patch should not be applied to ships guns
+===
+
 DOSBox v0.74 Manual (always use the latest version from www.dosbox.com)
 
 
