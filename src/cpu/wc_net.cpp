@@ -1820,6 +1820,11 @@ void wc_net_check_cpu_hooks() {
     if (SegValue(cs) == SEG001 && reg_eip == 0x04F2) {
         reg_eip += 5;
     }
+    if (!isServer && SegValue(cs) == SEG001 && reg_eip == 0x1695) {
+        // Disable autopilot function keypress for non-server.
+        // Only server can run autopilot. They will tell clients to show external camera.
+        reg_eip += 5;
+    }
     
     if (isExecutingOverlay(STUB133, 0x2a) && (
             /*reg_eip == 0x1e7
