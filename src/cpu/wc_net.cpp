@@ -862,7 +862,7 @@ void apply_damage(const Damage &dam) {
 
 void apply_autopiloting(const AutoPilotEvent &ape) {
     fprintf(stderr, "\r\napply_autopiloting(0x%x, 0x%x, 0x%x)\r\n",
-            ape.cam_ship_type(), ape.cam_ship_target(), ape.x());
+            ape.cam_ship_type(), ape.cam_mode(), ape.duration());
     {
         CPU_Push16((Bit16u)SegValue(cs));
         CPU_Push16((Bit16u)reg_eip);
@@ -873,9 +873,9 @@ void apply_autopiloting(const AutoPilotEvent &ape) {
             //push all regs, xor si,si, push si
             //0x60, //PUSHA
             0x56, // push si (original value)
-            0xbe, ape.x() & 0xff, ape.x() >> 8 ,// mov si <- x
+            0xbe, ape.duration() & 0xff, ape.duration() >> 8 ,// mov si <- x
             0x56, // push si
-            0xbe, ape.cam_ship_target() & 0xff, ape.cam_ship_target() >> 8 ,// mov si <- cam_ship_target
+            0xbe, ape.cam_mode() & 0xff, ape.cam_mode() >> 8 ,// mov si <- cam_mode
             0x56, // push si
             0xbe, ape.cam_ship_type() & 0xff, ape.cam_ship_type() >> 8 , // mov si <- cam_ship_type
             0x56, // push si
@@ -1324,13 +1324,17 @@ void process_network() {
             uninit_network();
             return;
         }
-        if (networkMessage.frame().autopiloting() == Engaged && networkMessage.frame().event().size() != 0) {
+        if (networkMessage.frame().autopiloting() != Disengaged && networkMessage.frame().event().size() != 0) {
+            if (networkMessage.frame().event().size() != 1) {
+                fprintf(stderr, "[ASSERT] Frame size is not 1 for auto frame\n");
+            }
             CPU_Push16((Bit16u)SegValue(cs));
             CPU_Push16((Bit16u)reg_eip);
             queuedEvents.push_back(QueuedEvent(networkMessage.frame().event(0), false));
             go_to_trampoline();
             // After trampoline, we will return to the start of process_network.
             gIgnoreNextProcessNetwork = false;
+            apply_frame(networkMessage.frame(), true);
             return;
         }
         apply_frame(networkMessage.frame());
@@ -1723,7 +1727,7 @@ void process_trampoline() {
     //fprintf(stderr, "Finished processing events for frame %d\n", gFrameNum);
     gIsProcessingTrampoline = false;
     if (!gSendFrameAtEndOfTrampoline) {
-        fprintf(stderr, "[Soft-ASSERT] We expect every trampoline-end to trigger a send-to-clients\n");
+        //fprintf(stderr, "[Soft-ASSERT] We expect every trampoline-end to trigger a send-to-clients\n");
     }
     flush_outgoing_frame();
 }
@@ -1817,32 +1821,39 @@ void wc_net_check_cpu_hooks() {
         reg_eip = 0x1391; // ret
     }
     // Skip orchestra...
-    if (SegValue(cs) == SEG001 && reg_eip == 0x04F2) {
+    if (reg_eip == 0x04F2 && SegValue(cs) == SEG001) {
         reg_eip += 5;
     }
     if (!isServer && SegValue(cs) == SEG001 && reg_eip == 0x1695) {
         // Disable autopilot function keypress for non-server.
         // Only server can run autopilot. They will tell clients to show external camera.
         reg_eip += 5;
+    }    
+    if (reg_eip == 0x5c9 && isExecutingOverlay(STUB133, 0x2a)) {
+        if (server) {
+            NetworkMessage msg;
+            Frame *frame = msg.mutable_frame();
+            frame->set_autopiloting(Finished);
+            AutoPilotEvent * ape = frame->add_event()->mutable_autopiloting();
+            ape->set_finish_camera(true);
+            populate_server_frame(frame);
+            for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
+                if (!c->is_disconnected()) {
+                    if (!send_msg(c->clientSocket, msg).ok()) { // Frame
+                        c->disconnect();
+                    }
+                }
+            }        
+        }
     }
-    
-    if (isExecutingOverlay(STUB133, 0x2a) && (
-            /*reg_eip == 0x1e7
-              || reg_eip == 0x2f0*/reg_eip == 0x030b)) { // 0x2a is the doAutopilot stub
-        //static bool val = true;
-        //forceBreak = val;
-        //val = !val;
-    }
-    if (isExecutingOverlay(STUB133, 0x2a) && (
-            /*reg_eip == 0x1e7
-              || reg_eip == 0x2f0*/reg_eip == 0x3)) { // 0x2a is the doAutopilot stub
+    if (reg_eip == 0x3 && isExecutingOverlay(STUB133, 0x2a)) { // 0x2a is the doAutopilot stub
         // we have just pushed bp and copied sp into bp
         // now we want to ingest the arguments that have been passed to the animation fucnction
         if (server) { 
             Bit16u cam_ship_type = 0xc;
             mem_readw_checked(DS_OFF + reg_ebp + 0x6, &cam_ship_type);
-            Bit16u cam_ship_target = 0x0;
-            mem_readw_checked(DS_OFF + reg_ebp + 0x8, &cam_ship_target);
+            Bit16u cam_mode = 0x0;
+            mem_readw_checked(DS_OFF + reg_ebp + 0x8, &cam_mode);
             Bit16u x = 0; // value of 0x78 in one sample
             mem_readw_checked(DS_OFF + reg_ebp + 0xa, &x);
             NetworkMessage msg;
@@ -1850,8 +1861,9 @@ void wc_net_check_cpu_hooks() {
             AutoPilotEvent * ape = frame->add_event()->mutable_autopiloting();
             frame->set_autopiloting(Engaged);
             ape->set_cam_ship_type(cam_ship_type);
-            ape->set_cam_ship_target(cam_ship_target);
-            ape->set_x(x);
+            ape->set_cam_mode(cam_mode);
+            ape->set_duration(x);
+            populate_server_frame(frame);
             for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
                 if (!c->is_disconnected()) {
                     if (!send_msg(c->clientSocket, msg).ok()) { // Frame

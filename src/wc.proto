@@ -70,8 +70,9 @@ enum AutoPilotState {
 
 message AutoPilotEvent {
    optional uint32 cam_ship_type = 1;
-   optional uint32 cam_ship_target = 2;
-   optional uint32 x = 3;
+   optional uint32 cam_mode = 2;
+   optional uint32 duration = 3;
+   optional bool finish_camera = 4;
 }
 
 message Event {
