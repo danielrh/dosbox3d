@@ -1191,7 +1191,7 @@ void flush_outgoing_frame() {
     }
 }
 
-void process_network() {
+void process_network(bool ignoreClientUpdate) {
     /*
   {
     fprintf(stderr, "entity-types " );
@@ -1250,10 +1250,14 @@ void process_network() {
                     c->disconnect();
                     continue;
                 }
-                merge_pending_frame(&*c, networkMessage.frame());
+                if (!ignoreClientUpdate) {
+                    merge_pending_frame(&*c, networkMessage.frame());
+                }
             }
         }
-        apply_frame(pendingState.frame());
+        if (!ignoreClientUpdate) {
+            apply_frame(pendingState.frame());
+        }
         gSendFrameAtEndOfTrampoline = true;
         while (!server->clients.empty()) {
             if (server->clients.back().is_disconnected())  {
@@ -1324,28 +1328,28 @@ void process_network() {
             uninit_network();
             return;
         }
-        if (networkMessage.frame().autopiloting() != Disengaged && networkMessage.frame().event().size() != 0) {
-            if (networkMessage.frame().event().size() != 1) {
-                fprintf(stderr, "[ASSERT] Frame size is not 1 for auto frame\n");
+        bool appliedOwn = false;
+        for (int i = 0; i < networkMessage.frame().event().size(); i++) {
+            if (networkMessage.frame().event(i).has_autopiloting()) {
+                appliedOwn = true;
+                apply_frame(networkMessage.frame(), true);
             }
-            CPU_Push16((Bit16u)SegValue(cs));
-            CPU_Push16((Bit16u)reg_eip);
-            queuedEvents.push_back(QueuedEvent(networkMessage.frame().event(0), false));
-            go_to_trampoline();
-            // After trampoline, we will return to the start of process_network.
-            gIgnoreNextProcessNetwork = false;
-            apply_frame(networkMessage.frame(), true);
-            return;
         }
-        apply_frame(networkMessage.frame());
+        if (!appliedOwn) {
+            apply_frame(networkMessage.frame());
+        }
     }
 
-    //fprintf(stderr, "Jumping to trampoline\n");
-    CPU_Push16((Bit16u)SegValue(cs));
-    CPU_Push16((Bit16u)reg_eip);
-    go_to_trampoline();
-    // After trampoline, we will return to the start of process_network unless true is set here
-    gIgnoreNextProcessNetwork = true;
+    if (ignoreClientUpdate) {
+        flush_outgoing_frame();
+    } else {
+        //fprintf(stderr, "Jumping to trampoline\n");
+        CPU_Push16((Bit16u)SegValue(cs));
+        CPU_Push16((Bit16u)reg_eip);
+        go_to_trampoline();
+        // After trampoline, we will return to the start of process_network unless true is set here
+        gIgnoreNextProcessNetwork = true;
+    }
 }
 
 template <class EventBuilder>
@@ -1706,6 +1710,7 @@ void process_trampoline() {
         }
         if (ev.has_autopiloting()) {
             apply_autopiloting(ev.autopiloting());
+            gIgnoreNextProcessNetwork = false;
         }
         if (reg_eip != DS_tramp_ret_NOP) {
             if (reg_eip == shellcode_start + 1) {
@@ -1831,19 +1836,9 @@ void wc_net_check_cpu_hooks() {
     }    
     if (reg_eip == 0x5c9 && isExecutingOverlay(STUB133, 0x2a)) {
         if (server) {
-            NetworkMessage msg;
-            Frame *frame = msg.mutable_frame();
-            frame->set_autopiloting(Finished);
-            AutoPilotEvent * ape = frame->add_event()->mutable_autopiloting();
+            AutoPilotEvent *ape = pendingState.frame().add_event()->mutable_autopiloting();
             ape->set_finish_camera(true);
-            populate_server_frame(frame);
-            for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
-                if (!c->is_disconnected()) {
-                    if (!send_msg(c->clientSocket, msg).ok()) { // Frame
-                        c->disconnect();
-                    }
-                }
-            }        
+            process_network(true);
         }
     }
     if (reg_eip == 0x3 && isExecutingOverlay(STUB133, 0x2a)) { // 0x2a is the doAutopilot stub
@@ -1856,21 +1851,11 @@ void wc_net_check_cpu_hooks() {
             mem_readw_checked(DS_OFF + reg_ebp + 0x8, &cam_mode);
             Bit16u x = 0; // value of 0x78 in one sample
             mem_readw_checked(DS_OFF + reg_ebp + 0xa, &x);
-            NetworkMessage msg;
-            Frame *frame = msg.mutable_frame();
-            AutoPilotEvent * ape = frame->add_event()->mutable_autopiloting();
-            frame->set_autopiloting(Engaged);
+            AutoPilotEvent *ape = pendingState.frame().add_event()->mutable_autopiloting();
             ape->set_cam_ship_type(cam_ship_type);
             ape->set_cam_mode(cam_mode);
             ape->set_duration(x);
-            populate_server_frame(frame);
-            for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
-                if (!c->is_disconnected()) {
-                    if (!send_msg(c->clientSocket, msg).ok()) { // Frame
-                        c->disconnect();
-                    }
-                }
-            }
+            process_network(true);
         }
         /*
         static bool val = true;

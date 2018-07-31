@@ -3,7 +3,7 @@
 
 void wc_net_check_cpu_hooks();
 
-void process_network();
+void process_network(bool ignoreClientUpdate=false);
 void process_damage();
 void process_fire();
 
