@@ -179,12 +179,12 @@ struct ClientState {
     NetworkShipId shipId;
     std::string callsign;
     std::vector<int> netToLocalMapping;
-    GameState mission_status;
+    GameState last_written_mission_status;
     ClientState()
       : clientSocket(-1),
         shipId(NetworkShipId::from_net(0))
     {
-        mission_status = Proceed;
+        last_written_mission_status = Proceed;
         const char *cs = getenv("WCCALLSIGN");
         if (cs) {
             callsign = cs;
@@ -1150,7 +1150,7 @@ void apply_frame(const Frame &frame, bool applyOwnLocation=false) {
     if (frame.game_update() != Proceed) {
         mem_writew(DS_OFF + 0xae, frame.game_update());
         if (client) {
-            client->mission_status = frame.game_update();
+            client->last_written_mission_status = frame.game_update();
         }
     }
     for (int i = 0; i < frame.update_size(); i++) {
@@ -1846,9 +1846,13 @@ void wc_net_check_cpu_hooks() {
     }
     if (client) {
         Bit16u mission_status = mem_readw(DS_OFF + 0xae);
-        if (mission_status && mission_status != client->mission_status) { // allow local code to reset to zero
-            pendingState.frame().set_game_update((GameState)mission_status);
-            mem_writew(DS_OFF + 0xae, client->mission_status);
+        if (mission_status != client->last_written_mission_status) { // allow local code to reset to zero
+            mem_writew(DS_OFF + 0xae, 0);
+            if (mission_status == Proceed) {
+                client->last_written_mission_status = Proceed;
+            } else {
+                pendingState.frame().set_game_update((GameState)mission_status);
+            }
         }
     }
     if (server && reg_eip == 0x210f && SegValue(cs) == SEG001) { // mission has ended for some reason
