@@ -59,8 +59,11 @@ message ShipUpdate {
 
 enum GameState {
      Proceed = 0;
-     EndVictory = 1;
-     EndDefeat = 2;
+     EndLand = 1;
+     EndEject = 2;
+     EndCarrier = 3;
+     EndDeath = 4;
+     EndExit = 5;
 }
 
 enum AutoPilotState {
@@ -88,7 +91,6 @@ message Event {
 message Frame {
     repeated ShipUpdate update = 1; // one update per updated ship
     repeated Event event = 2;
-    optional AutoPilotState autopiloting = 16;
     optional GameState game_update = 17;
 }
 

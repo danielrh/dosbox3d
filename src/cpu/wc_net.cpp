@@ -179,10 +179,12 @@ struct ClientState {
     NetworkShipId shipId;
     std::string callsign;
     std::vector<int> netToLocalMapping;
+    GameState mission_status;
     ClientState()
       : clientSocket(-1),
         shipId(NetworkShipId::from_net(0))
     {
+        mission_status = Proceed;
         const char *cs = getenv("WCCALLSIGN");
         if (cs) {
             callsign = cs;
@@ -1112,6 +1114,10 @@ void run_campaign(int missionId, int seriesId) {
 }
 
 void merge_pending_frame(RemoteClient *sender, const Frame &frame) {
+    if (frame.game_update() != Proceed) {
+        //  we don't want to broadcase this *and* apply it ourselves pendingState.frame().set_game_update(frame.game_update());
+        mem_writew(DS_OFF + 0xae, frame.game_update());
+    }
     for (int i = 0; i < frame.update_size(); i++) {
         const ShipUpdate &su = frame.update(i);
         if (!su.has_ship_id()) {
@@ -1141,6 +1147,12 @@ void merge_pending_frame(RemoteClient *sender, const Frame &frame) {
 }
 
 void apply_frame(const Frame &frame, bool applyOwnLocation=false) {
+    if (frame.game_update() != Proceed) {
+        mem_writew(DS_OFF + 0xae, frame.game_update());
+        if (client) {
+            client->mission_status = frame.game_update();
+        }
+    }
     for (int i = 0; i < frame.update_size(); i++) {
         const ShipUpdate &su = frame.update(i);
         if (!su.has_ship_id()) {
@@ -1831,6 +1843,23 @@ void wc_net_check_cpu_hooks() {
     // Skip orchestra...
     if (reg_eip == 0x04F2 && SegValue(cs) == SEG001) {
         reg_eip += 5;
+    }
+    if (client) {
+        Bit16u mission_status = mem_readw(DS_OFF + 0xae);
+        if (mission_status && mission_status != client->mission_status) { // allow local code to reset to zero
+            pendingState.frame().set_game_update((GameState)mission_status);
+            mem_writew(DS_OFF + 0xae, client->mission_status);
+        }
+    }
+    if (server && reg_eip == 0x210f && SegValue(cs) == SEG001) { // mission has ended for some reason
+        Bit16u mission_status = mem_readw(DS_OFF + 0xae);
+        if (mission_status <= 5) {
+            pendingState.frame().set_game_update((GameState)mission_status);
+            if (server) {
+                gSendFrameAtEndOfTrampoline = true; // hax to force send of network data
+            } 
+            process_network(true);
+        }
     }
     /*
     if (isExecutingFunction(STUB164, 0x4d)) {
