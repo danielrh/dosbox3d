@@ -1328,16 +1328,13 @@ void process_network(bool ignoreClientUpdate) {
             uninit_network();
             return;
         }
-        bool appliedOwn = false;
+        bool applyOwnPosition = false;
         for (int i = 0; i < networkMessage.frame().event().size(); i++) {
             if (networkMessage.frame().event(i).has_autopiloting()) {
-                appliedOwn = true;
-                apply_frame(networkMessage.frame(), true);
+                applyOwnPosition = true;
             }
         }
-        if (!appliedOwn) {
-            apply_frame(networkMessage.frame());
-        }
+        apply_frame(networkMessage.frame(), applyOwnPosition);
     }
 
     if (ignoreClientUpdate) {
