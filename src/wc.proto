@@ -20,6 +20,7 @@ message Location {
         optional Vector right = 3;
         optional Vector up = 4;
         optional Vector fore = 5;
+        optional uint32 set_speed = 6;
 }
 
 message Damage {

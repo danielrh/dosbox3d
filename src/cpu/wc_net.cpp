@@ -736,6 +736,9 @@ void populate_ship_update(Frame *frame, NetworkShipId ship_id) {
     populate_vector(loc->mutable_right(), DS_Right, ship_id);
     populate_vector(loc->mutable_up(), DS_Up, ship_id);
     populate_vector(loc->mutable_fore(), DS_Forward, ship_id);
+    unsigned int set_speed = 0;
+    mem_readd_checked(DS_OFF + DS_SetSpeed + ship_id.to_local() * 4, &set_speed);
+    loc->set_set_speed(set_speed);
 }
 
 void populate_server_frame(Frame *frame) {
@@ -777,6 +780,9 @@ void apply_ship_update_location(const ShipUpdate &su) {
         store_vector(loc.right(), DS_Right, ship_id);
         store_vector(loc.up(), DS_Up, ship_id);
         store_vector(loc.fore(), DS_Forward, ship_id);
+    }
+    if (loc.has_set_speed()) {
+        mem_writed_checked(DS_OFF + DS_SetSpeed + ship_id.to_local() * 4, loc.set_speed());
     }
 }
 
@@ -1825,6 +1831,16 @@ void wc_net_check_cpu_hooks() {
     // Skip orchestra...
     if (reg_eip == 0x04F2 && SegValue(cs) == SEG001) {
         reg_eip += 5;
+    }
+    /*
+    if (isExecutingFunction(STUB164, 0x4d)) {
+        reg_eip = 0x073c; // should stop AI ability to set_speed...but this wasn't being called for wingman
+        }*/
+    if (isExecutingFunction(STUB143, 0x10b)) {
+        Bit16u aiShipId = mem_readw(DS_OFF + reg_esp + 4);
+        if ((!server) || server->get_client(NetworkShipId::from_local(aiShipId))) {
+           reg_eip = 0x918; // should stop AI ability to set_speed
+        }
     }
     if (!isServer && SegValue(cs) == SEG001 && reg_eip == 0x1695) {
         // Disable autopilot function keypress for non-server.

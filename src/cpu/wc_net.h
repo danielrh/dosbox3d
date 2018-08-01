@@ -135,7 +135,8 @@ enum {
     STUB148 = 0x1318,
     STUB150 = 0x1327,
     STUB151 = 0x1333,
-    STUB161 = 0x1361
+    STUB161 = 0x1361,
+    STUB164 = 0x1381, // ida: 11df
 };
 
 enum {
@@ -144,6 +145,7 @@ enum {
     Instr_RETF = 0xCB
 };
 enum DataSegValues {
+    DS_SetSpeed = 0xB9F6,
     DS_Pos = 0xA9C2,
     DS_Vel = 0xCAE2,
     DS_Right = 0xAEB6,
