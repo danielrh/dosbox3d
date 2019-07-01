@@ -1,4 +1,4 @@
-#!/usr/bin/python
+#!/usr/bin/python2.7
 
 from subprocess import check_output
 from sys import argv
@@ -53,8 +53,8 @@ def make_version_h(gitpath, compiler):
 # Program begins here
 
 if len(argv) != 4:
-    print "Usage: python", argv[0], \
-          "VERSION_HEADER, GIT_PATH, COMPILER_PATH"
+    print("Usage: python", argv[0], \
+          "VERSION_HEADER, GIT_PATH, COMPILER_PATH")
     exit(1)
 
 current_version = make_version_h(argv[2], argv[3])

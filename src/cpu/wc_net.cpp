@@ -30,7 +30,10 @@ bool DEBUG_PROTOBUF =
 // only in heavy debug;
 extern bool forceBreak;
 
-
+Bit8u u8(Bit32u data) {
+    assert(data <256);
+    return (Bit8u)data;
+}
 
 NetConfig::NetConfig() {
     host = getenv("WCHOST");
@@ -44,9 +47,21 @@ NetConfig::NetConfig() {
 }
 
 int really_close(int s) {
-    int retval = -1;
-    while ((retval = close(s)) == -1 && errno == EINTR) {}
-    return retval;
+/*
+  The EINTR error is a somewhat special case.  Regarding the EINTR error, POSIX.1-2013 says:
+         If close() is interrupted by a signal that is to be caught, it shall return -1 with
+         errno set to EINTR and the state of fildes is unspecified.
+  This permits the behavior that occurs on Linux and many other implementations,  where,  as
+  with other errors that may be reported by close(), the file descriptor is guaranteed to be
+  closed.  However, it also permits another possibility: that the implementation returns  an
+  EINTR  error and keeps the file descriptor open.  (According to its documentation, HP-UX's
+  close() does this.)  The caller must then once more use close() to close the file descrip‐
+  tor, to avoid file descriptor leaks.  This divergence in implementation behaviors provides
+  a difficult hurdle for portable applications, since on many implementations, close()  must
+  not  be  called  again  after  an EINTR error, and on at least one, close() must be called
+  again.  There are plans to address this conundrum  for  the  next  major  release  of  the
+  POSIX.1 standard. */
+    return close(s);
 }
 
 // SendOrRecvFunction(void*, size_t) -> ssize_t
@@ -114,6 +129,7 @@ struct RemoteClient {
     NetworkShipId id;
     int clientSocket;
     std::string callsign;
+    std::string remote_mission_tree_progress;
     RemoteClient(NetworkShipId id)
       : clientSocket(-1),
         id(id) {
@@ -174,12 +190,14 @@ struct ServerState {
     }
 } *server;
 
+
 struct ClientState {
     int clientSocket;
     NetworkShipId shipId;
     std::string callsign;
     std::vector<int> netToLocalMapping;
     GameState last_written_mission_status;
+    std::string mission_tree_progress;
     ClientState()
       : clientSocket(-1),
         shipId(NetworkShipId::from_net(0))
@@ -841,13 +859,13 @@ void apply_damage(const Damage &dam) {
             //push all regs, xor si,si, push si
             //0x60, //PUSHA
             0x56, // push si (original value)
-            0xbe, arg_6 & 0xff, arg_6 >> 8,
+            0xbe, u8(arg_6 & 0xff), u8(arg_6 >> 8),
             0x56, // push si
-            0xbe, arg_4 & 0xff, arg_4 >> 8,
+            0xbe, u8(arg_4 & 0xff), u8(arg_4 >> 8),
             0x56, // push si
-            0xbe, arg_2 & 0xff, arg_2 >> 8,
+            0xbe, u8(arg_2 & 0xff), u8(arg_2 >> 8),
             0x56, // push si
-            0xbe, arg_0 & 0xff, arg_0 >> 8,
+            0xbe, u8(arg_0 & 0xff), u8(arg_0 >> 8),
             0x56, // push si
             // call far 12d7:012E
             0x9A, 0x84, 0x00, 0xd7, 0x12,
@@ -881,11 +899,11 @@ void apply_autopiloting(const AutoPilotEvent &ape) {
             //push all regs, xor si,si, push si
             //0x60, //PUSHA
             0x56, // push si (original value)
-            0xbe, ape.duration() & 0xff, ape.duration() >> 8 ,// mov si <- x
+            0xbe, u8(ape.duration() & 0xff), u8(ape.duration() >> 8) ,// mov si <- x
             0x56, // push si
-            0xbe, ape.cam_mode() & 0xff, ape.cam_mode() >> 8 ,// mov si <- cam_mode
+            0xbe, u8(ape.cam_mode() & 0xff), u8(ape.cam_mode() >> 8) ,// mov si <- cam_mode
             0x56, // push si
-            0xbe, ape.cam_ship_type() & 0xff, ape.cam_ship_type() >> 8 , // mov si <- cam_ship_type
+            0xbe, u8(ape.cam_ship_type() & 0xff), u8(ape.cam_ship_type() >> 8) , // mov si <- cam_ship_type
             0x56, // push si
             // call far 12d7:012E
             0x9A, 0x25, 0x00, STUB133 & 0xff, STUB133 >> 8,
@@ -930,9 +948,9 @@ void apply_weapon_fire(const WeaponFire &fire) {
             //push all regs, xor si,si, push si
             //0x60, //PUSHA
             0x56, // push si (original value)
-            0xbe, gun_id & 0xff, gun_id >> 8,// mov si <-- gun_id
+            0xbe, u8(gun_id & 0xff), u8(gun_id >> 8),// mov si <-- gun_id
             0x56, // push si
-            0xbe, ship_id & 0xff, ship_id >> 8, // mov si <- ship_id
+            0xbe, u8(ship_id & 0xff), u8(ship_id >> 8), // mov si <- ship_id
             0x56, // push si
             // call far 12d7:012E
             0x9A, 0x2E, 0x01, 0xd7, 0x12,
@@ -973,9 +991,9 @@ void apply_spawn(const Spawn &spawn) {
             //push all regs, xor si,si, push si
             //0x60, //PUSHA
             0x56, // push si (original value)
-            0xbe, situation_id & 0xff, situation_id >> 8, // mov si <- ship_id
+            0xbe, u8(situation_id & 0xff), u8(situation_id >> 8), // mov si <- ship_id
             0x56, // push si
-            0xbe, mission_ship_id & 0xff, mission_ship_id >> 8,// mov si <-- gun_id
+            0xbe, u8(mission_ship_id & 0xff), u8(mission_ship_id >> 8),// mov si <-- gun_id
             0x56, // push si
             // call far 12f2:00b6
             0x9A, 0xB6, 0x00, 0xF2, 0x12,
@@ -1014,7 +1032,7 @@ void apply_despawn(const Despawn &despawn) {
             //push all regs, xor si,si, push si
             //0x60, //PUSHA
             0x56, // push si (original value)
-            0xbe, ship_id & 0xff, ship_id >> 8, // mov si <- ship_id
+            0xbe, u8(ship_id & 0xff), u8(ship_id >> 8), // mov si <- ship_id
             0x56, // push si
             // call far 12d7:012E
             0x9A, 0xDD, 0x01, 0xad, 0x12,
@@ -1054,12 +1072,12 @@ void apply_delayed_despawn(const Despawn &despawn) {
         Bit8u shellcode[] = {
             0x00, // nul terminate string
             0x56, // push si (original value)
-            0xbe, ship_id & 0xff, ship_id >> 8, // mov si <- ship_id
+            0xbe, u8(ship_id & 0xff), u8(ship_id >> 8), // mov si <- ship_id
             0x56, // push si
-            0xbe, source_id & 0xff, source_id >> 8, // mov si <- ship_id
+            0xbe, u8(source_id & 0xff), u8(source_id >> 8), // mov si <- ship_id
             0x56, // push si
             // call far 12d7:008E
-            0x9A, 0x8E, 0x00, STUB143 & 0xff, STUB143 >> 8,
+            0x9A, 0x8E, 0x00, u8(STUB143 & 0xff), u8(STUB143 >> 8),
             // pop si, pop si
             0x5E, 0x5E, 0x5E,
             //0x61, 0x9D, // pop all regs, pop flags
@@ -1082,14 +1100,14 @@ void run_briefing(int missionId, int seriesId) {
             0x55, // push bp
             0x8B, 0xEC, // mov sp, bp
             0x56, // push si (original value)
-            0xbe, seriesId & 0xff, seriesId >> 8, // mov si <- ship_id
+            0xbe, u8(seriesId & 0xff), u8(seriesId >> 8), // mov si <- ship_id
             0x56, // push si
-            0xbe, missionId & 0xff, missionId >> 8, // mov si <- ship_id
+            0xbe, u8(missionId & 0xff), u8(missionId >> 8), // mov si <- ship_id
             0x56, // push si
             // call far stub148:005C (j_outerLoadBriefingAnimation)
-            0x9A, 0x5C, 0x00, STUB148 & 0xff, STUB148 >> 8,
+            0x9A, 0x5C, 0x00, u8(STUB148 & 0xff), u8(STUB148 >> 8),
             // call far stub151:0025 (j_loadScrambleAnimation)
-            0x9A, 0x25, 0x00, STUB151 & 0xff, STUB151 >> 8,
+            0x9A, 0x25, 0x00, u8(STUB151 & 0xff), u8(STUB151 >> 8),
             // pop si, pop si, pop si
             0x5E, 0x5E, 0x5E,
             0x5d, // pop bp
@@ -1114,9 +1132,10 @@ void run_campaign(int missionId, int seriesId) {
 }
 
 void merge_pending_frame(RemoteClient *sender, const Frame &frame) {
-    if (frame.game_update() != Proceed) {
+    if (frame.has_mission_end()) {
         //  we don't want to broadcase this *and* apply it ourselves pendingState.frame().set_game_update(frame.game_update());
-        mem_writew(DS_OFF + 0xae, frame.game_update());
+        mem_writew(DS_OFF + 0xae, frame.mission_end().game_update());
+        sender->remote_mission_tree_progress = frame.mission_end().mission_tree_progress();
     }
     for (int i = 0; i < frame.update_size(); i++) {
         const ShipUpdate &su = frame.update(i);
@@ -1147,10 +1166,11 @@ void merge_pending_frame(RemoteClient *sender, const Frame &frame) {
 }
 
 void apply_frame(const Frame &frame, bool applyOwnLocation=false) {
-    if (frame.game_update() != Proceed) {
-        mem_writew(DS_OFF + 0xae, frame.game_update());
+    if (frame.has_mission_end()) {
+        mem_writew(DS_OFF + 0xae, frame.mission_end().game_update());
         if (client) {
-            client->last_written_mission_status = frame.game_update();
+            client->last_written_mission_status = frame.mission_end().game_update();
+            client->mission_tree_progress = frame.mission_end().mission_tree_progress();
         }
     }
     for (int i = 0; i < frame.update_size(); i++) {
@@ -1200,7 +1220,15 @@ void flush_outgoing_frame() {
         gSendFrameAtEndOfTrampoline = false;
         for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
             if (!c->is_disconnected()) {
-                if (!send_msg(c->clientSocket, pendingState.frameMessage).ok()) { // Frame
+                const NetworkMessage *frameMessage = &pendingState.frameMessage;
+                NetworkMessage modifiedMessage;
+                if (c->remote_mission_tree_progress.length()) {
+                    modifiedMessage = *frameMessage;
+                    modifiedMessage.mutable_frame()->clear_mission_end();
+                    frameMessage = &modifiedMessage;
+                    c->remote_mission_tree_progress.clear();
+                }
+                if (!send_msg(c->clientSocket, *frameMessage).ok()) { // Frame
                     c->disconnect();
                 }
             }
@@ -1790,6 +1818,31 @@ extern void setBreakpoint(Bit16u seg, Bit32u off);
 
 bool skipBarracks = false;
 
+
+void  load_mission_tree_progress(const std::string mission_tree_data){
+    size_t limit = std::min(mission_tree_data.length(), (size_t)65536);
+    for (size_t i = 0;i < limit; i+=sizeof(Bit32u)) {
+        Bit32u val;
+        memcpy(&val, &mission_tree_data.front() + i,sizeof(Bit32u));
+        mem_writed(DS_OFF + i, val);
+    }
+    
+}
+
+void populate_mission_end(MissionEnd *mission_end) {
+    Bit16u mission_status = mem_readw(DS_OFF + 0xae);
+    mission_end->set_game_update((GameState)mission_status);
+    std::string *mission_tree = mission_end->mutable_mission_tree_progress();
+    mission_tree->resize(65536);
+    Bit32u val = 0;
+    for (size_t i = 0;i < 65536; i+=sizeof(Bit32u)) {
+        val = mem_readd(DS_OFF + i);
+        memcpy(&mission_tree->front() + i, &val, sizeof(Bit32u));
+    }
+    
+
+}
+
 void wc_net_check_cpu_hooks() {
     /*{
         Bit16u stubSeg = STUB145;
@@ -1851,18 +1904,38 @@ void wc_net_check_cpu_hooks() {
             if (mission_status == Proceed) {
                 client->last_written_mission_status = Proceed;
             } else {
-                pendingState.frame().set_game_update((GameState)mission_status);
+                MissionEnd *mission_end = pendingState.frame().mutable_mission_end();
+                populate_mission_end(mission_end);
             }
         }
     }
-    if (server && reg_eip == 0x210f && SegValue(cs) == SEG001) { // mission has ended for some reason
-        Bit16u mission_status = mem_readw(DS_OFF + 0xae);
-        if (mission_status <= 5) {
-            pendingState.frame().set_game_update((GameState)mission_status);
-            if (server) {
-                gSendFrameAtEndOfTrampoline = true; // hax to force send of network data
-            } 
-            process_network(true);
+    if (reg_eip == 0x210f && SegValue(cs) == SEG001) { // mission has ended for some reason
+        if (client) {
+            if (client->mission_tree_progress.length()) {
+                load_mission_tree_progress(client->mission_tree_progress);
+                client->mission_tree_progress = "";
+            }
+        }
+        if (server) {
+            Bit16u mission_status = mem_readw(DS_OFF + 0xae);
+            if (mission_status <= 5) {
+                int ending_client = -1;
+                if (server) {
+                    for (std::vector<RemoteClient>::iterator i = server->clients.begin(), ie = server->clients.end(); i != ie ;++i) {
+                        if (i->remote_mission_tree_progress.length() != 0) {
+                            load_mission_tree_progress(i->remote_mission_tree_progress);
+                            ending_client = (int)(i - server->clients.begin());
+                        }
+                    }
+                }
+                MissionEnd *mission_end = pendingState.frame().mutable_mission_end();
+                populate_mission_end(mission_end);
+                
+                if (server) {
+                    gSendFrameAtEndOfTrampoline = true; // hax to force send of network data
+                } 
+                process_network(true);
+            }
         }
     }
     /*
@@ -1909,6 +1982,7 @@ void wc_net_check_cpu_hooks() {
         val = !val;*/
     }
     if (SegValue(cs) == SEG001 && reg_eip == 0x0512) {
+        // somehow we need to convince it we've loaded a mission so we can go back to launch area
         char *misenv = getenv("MIS");
         char *serenv = getenv("SERIES");
         int miss = atoi(misenv ? misenv : "0");

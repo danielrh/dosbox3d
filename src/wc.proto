@@ -88,10 +88,15 @@ message Event {
   optional AutoPilotEvent autopiloting = 16;
 }
 
+message MissionEnd {
+    optional GameState game_update = 1;
+    optional bytes mission_tree_progress = 2;
+}
+
 message Frame {
     repeated ShipUpdate update = 1; // one update per updated ship
     repeated Event event = 2;
-    optional GameState game_update = 17;
+    optional MissionEnd mission_end = 18;
 }
 
 // Connect -> once per mission
