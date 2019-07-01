@@ -1818,13 +1818,50 @@ extern void setBreakpoint(Bit16u seg, Bit32u off);
 
 bool skipBarracks = false;
 
+// FAIL (0,32768) did not contain mission status
+// OKAY (32768,32768) did contain mission status
+// FAIL (32768,16384) did not contain mission status
+// FAIL (32768,16384) did not contain mission status
+// OKAY (49152,16384) did contain mission status
+// ERROR(49152,8192) Caused BUFFER error
+// OKish(53248,8192) MISSING sprite (but OK results)
+// OKish(53248,4096) MISSING sprite (but OK results)
+// FAIis(57344,4096) failed mission, no sprite
+// OKAY (53248,2048) OK results!
+// OKAY (53248,1024) OK results!
+// FAIL (53248,512) (also no sprite)
+// OKAY (53760,256) OK results (also no sprite)
+// FAIL (53760,128) also no sprite
+// FAIL (53888,128) FAIL?>!?
+// OKAY (53760,256) repro OK results (also no sprite)
+// FAIL (53896,128) FAIL
+// FAIL (53896,192) FAIL
+// OKAY (53760,192) OK results (also no sprite)
+// OKAY (53832,128) OK results (also no sprite)
+// OKAY (53832,96) OK results (also no sprite)
+// OKAY (53832,64) FAIL results (also no sprite)
+// OKAY (53832,80) OK results
+
+
+
+const size_t mission_tree_start = 53832;
+const size_t mission_tree_size = 80;
 
 void  load_mission_tree_progress(const std::string mission_tree_data){
-    size_t limit = std::min(mission_tree_data.length(), (size_t)65536);
-    for (size_t i = 0;i < limit; i+=sizeof(Bit32u)) {
-        Bit32u val;
-        memcpy(&val, &mission_tree_data.front() + i,sizeof(Bit32u));
-        mem_writed(DS_OFF + i, val);
+    if (mission_tree_data.length() != mission_tree_size) {
+        fprintf(stderr, "Uncommon mission tree data length %ld != %ld\n",
+                mission_tree_data.length(), mission_tree_size);
+        return;
+    }
+    if (mission_tree_start + mission_tree_size > 65536) {
+        fprintf(stderr, "Data segment is only 64K not %ld\n",
+                mission_tree_start + mission_tree_size);
+        return;
+    }
+    for (size_t i = 0;i < mission_tree_size; i+=1) {//sizeof(Bit32u)) {
+        Bit8u val;
+        memcpy(&val, &mission_tree_data.front() + i,sizeof(val));
+        mem_writeb(DS_OFF + i + mission_tree_start, val);
     }
     
 }
@@ -1832,15 +1869,18 @@ void  load_mission_tree_progress(const std::string mission_tree_data){
 void populate_mission_end(MissionEnd *mission_end) {
     Bit16u mission_status = mem_readw(DS_OFF + 0xae);
     mission_end->set_game_update((GameState)mission_status);
-    std::string *mission_tree = mission_end->mutable_mission_tree_progress();
-    mission_tree->resize(65536);
-    Bit32u val = 0;
-    for (size_t i = 0;i < 65536; i+=sizeof(Bit32u)) {
-        val = mem_readd(DS_OFF + i);
-        memcpy(&mission_tree->front() + i, &val, sizeof(Bit32u));
+    if (mission_tree_start + mission_tree_size > 65536) {
+        fprintf(stderr, "Data segment is only 64K not %ld\n",
+                mission_tree_start + mission_tree_size);
+        return;
     }
-    
-
+    std::string *mission_tree = mission_end->mutable_mission_tree_progress();
+    mission_tree->resize(mission_tree_size);
+    Bit8u val = 0;
+    for (size_t i = 0;i < mission_tree_size; i+=1) {//sizeof(Bit32u)) {
+        val = mem_readb(DS_OFF + i + mission_tree_start);
+        memcpy(&mission_tree->front() + i, &val, sizeof(val));
+    }
 }
 
 void wc_net_check_cpu_hooks() {
