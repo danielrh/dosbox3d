@@ -1124,6 +1124,7 @@ void run_briefing(int missionId, int seriesId) {
 void run_campaign(int missionId, int seriesId) {
     mem_writeb_checked(DS_OFF + 0xC255, missionId);
     mem_writeb_checked(DS_OFF + 0xC256, seriesId);
+    mem_writeb_checked(DS_OFF + 0x300C, 1); // has loaded save game
     CPU_Push16((Bit16u)SegValue(cs));
     CPU_Push16((Bit16u)reg_eip + 5);
     SegSet16(cs, STUB161);
