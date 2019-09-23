@@ -323,6 +323,10 @@ static void RENDER_Reset( void ) {
 			if (render.scale.size == 2)
 				complexBlock = &Scale2xSaI;
 			break;
+		case scalerOpGato:
+			if (render.scale.size == 2)
+				complexBlock = &ScaleGato;
+			break;
 #endif
 		case scalerOpTV:
 			if (render.scale.size == 2)
@@ -595,6 +599,7 @@ void RENDER_Init(Section * sec) {
    
 	if (scaler == "none") { render.scale.op = scalerOpNormal;render.scale.size = 1; }
 	else if (scaler == "normal2x") { render.scale.op = scalerOpNormal;render.scale.size = 2; }
+	else if (scaler == "gato") {render.scale.op = scalerOpGato;render.scale.size = 2; }
 	else if (scaler == "normal3x") { render.scale.op = scalerOpNormal;render.scale.size = 3; }
 #if RENDER_USE_ADVANCED_SCALERS>2
 	else if (scaler == "advmame2x") { render.scale.op = scalerOpAdvMame;render.scale.size = 2; }
@@ -603,7 +608,7 @@ void RENDER_Init(Section * sec) {
 	else if (scaler == "advinterp3x") { render.scale.op = scalerOpAdvInterp;render.scale.size = 3; }
 	else if (scaler == "hq2x") { render.scale.op = scalerOpHQ;render.scale.size = 2; }
 	else if (scaler == "hq3x") { render.scale.op = scalerOpHQ;render.scale.size = 3; }
-	else if (scaler == "2xsai") { render.scale.op = scalerOpSaI;render.scale.size = 2; }
+ 	else if (scaler == "2xsai") { render.scale.op = scalerOpSaI;render.scale.size = 2; }
 	else if (scaler == "super2xsai") { render.scale.op = scalerOpSuperSaI;render.scale.size = 2; }
 	else if (scaler == "supereagle") { render.scale.op = scalerOpSuperEagle;render.scale.size = 2; }
 #endif

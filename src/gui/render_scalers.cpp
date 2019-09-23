@@ -389,6 +389,15 @@ ScalerComplexBlock_t ScaleHQ2x ={
 {	0,HQ2x_16_R,HQ2x_16_R,HQ2x_32_R}
 };
 
+/* These need specific 15bpp versions */
+ScalerComplexBlock_t ScaleGato ={
+	"Gato",
+	GFX_CAN_8|GFX_CAN_15|GFX_CAN_16|GFX_CAN_32, //|GFX_RGBONLY
+	2,2,
+{	Gato_8_L,Gato_16_L,Gato_16_L,Gato_32_L},
+{	Gato_8_R,Gato_16_R,Gato_16_R,Gato_32_R}
+};
+
 ScalerComplexBlock_t ScaleHQ3x ={
 	"HQ3x",
 	GFX_CAN_15|GFX_CAN_16|GFX_CAN_32|GFX_RGBONLY,

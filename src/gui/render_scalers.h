@@ -50,6 +50,7 @@ typedef enum scalerOperation {
 	scalerOpSaI,
 	scalerOpSuperSaI,
 	scalerOpSuperEagle,
+    scalerOpGato,
 #endif
 #if RENDER_USE_ADVANCED_SCALERS>0
 	scalerOpTV,
@@ -126,6 +127,7 @@ extern ScalerSimpleBlock_t ScaleScan3x;
 extern ScalerComplexBlock_t ScaleHQ2x;
 extern ScalerComplexBlock_t ScaleHQ3x;
 extern ScalerComplexBlock_t Scale2xSaI;
+extern ScalerComplexBlock_t ScaleGato;
 extern ScalerComplexBlock_t ScaleSuper2xSaI;
 extern ScalerComplexBlock_t ScaleSuperEagle;
 extern ScalerComplexBlock_t ScaleAdvMame2x;

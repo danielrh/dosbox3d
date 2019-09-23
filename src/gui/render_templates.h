@@ -443,6 +443,7 @@ static void conc3d(Cache,SBPP,DBPP) (const void * s) {
 #undef SCALERHEIGHT
 #undef SCALERFUNC
 
+
 #define SCALERNAME		HQ3x
 #define SCALERWIDTH		3
 #define SCALERHEIGHT	3
@@ -532,6 +533,17 @@ static void conc3d(Cache,SBPP,DBPP) (const void * s) {
 #undef SCALERFUNC
 
 #endif // #if (DBPP > 8)
+
+#define SCALERNAME		Gato
+#define SCALERWIDTH		2
+#define SCALERHEIGHT	2
+#include "render_templates_gato.h"
+#define SCALERFUNC		conc2d(Gato,SBPP)(line0, line1, fc)
+#include "render_loops.h"
+#undef SCALERNAME
+#undef SCALERWIDTH
+#undef SCALERHEIGHT
+#undef SCALERFUNC
 
 #define SCALERNAME		AdvMame2x
 #define SCALERWIDTH		2
