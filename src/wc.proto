@@ -91,6 +91,7 @@ message Event {
 message MissionEnd {
     optional GameState game_update = 1;
     optional bytes mission_tree_progress = 2;
+    optional uint32 victory_points_plus_one = 3;
 }
 
 message Frame {

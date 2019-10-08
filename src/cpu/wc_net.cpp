@@ -29,7 +29,7 @@ bool DEBUG_PROTOBUF =
 
 // only in heavy debug;
 extern bool forceBreak;
-
+int in_simulation = 0;
 Bit8u u8(Bit32u data) {
     assert(data <256);
     return (Bit8u)data;
@@ -197,10 +197,12 @@ struct ClientState {
     std::string callsign;
     std::vector<int> netToLocalMapping;
     GameState last_written_mission_status;
+    uint32_t last_received_victory_points_plus_one;
     std::string mission_tree_progress;
     ClientState()
       : clientSocket(-1),
-        shipId(NetworkShipId::from_net(0))
+       shipId(NetworkShipId::from_net(0)),
+       last_received_victory_points_plus_one(0)
     {
         last_written_mission_status = Proceed;
         const char *cs = getenv("WCCALLSIGN");
@@ -415,10 +417,11 @@ int gFrameNum = 0;
 bool gIgnoreNextProcessNetwork = false;
 bool gIsProcessingTrampoline = false;
 
-int fire_fifo = open("/tmp/fire.fifo", O_RDONLY|O_NONBLOCK);
-FILE *memlog = fopen("/tmp/mem.txt", "a");
-FILE *debuglog = fopen("/tmp/debug.txt", "a");
-
+#if C_HEAVY_DEBUG
+FILE *debuglog = stderr;//fopen("/tmp/debug.txt", "a");
+#else
+FILE *debuglog = NULL;
+#endif
 void uninit_network() {
     pendingState.frameMessage.Clear();
     if (server) {
@@ -881,7 +884,9 @@ void apply_damage(const Damage &dam) {
         }
         SegSet16(cs, DS);
         reg_eip = shellcode_start + 1;
-        fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
+        if (debuglog) {
+            fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
+        }
     }
 }
 
@@ -917,7 +922,9 @@ void apply_autopiloting(const AutoPilotEvent &ape) {
         }
         SegSet16(cs, DS);
         reg_eip = shellcode_start + 1;
-        fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
+        if (debuglog) {
+            fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
+        }
     }    
 }
 void apply_weapon_fire(const WeaponFire &fire) {
@@ -964,7 +971,9 @@ void apply_weapon_fire(const WeaponFire &fire) {
         }
         SegSet16(cs, DS);
         reg_eip = shellcode_start + 1;
-        fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
+        if (debuglog) {
+            fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
+        }
     }
 }
 
@@ -1007,7 +1016,9 @@ void apply_spawn(const Spawn &spawn) {
         }
         SegSet16(cs, DS);
         reg_eip = shellcode_start + 1;
-        fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
+        if (debuglog) {
+            fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
+        }
     }
 }
 
@@ -1046,7 +1057,9 @@ void apply_despawn(const Despawn &despawn) {
         }
         SegSet16(cs, DS);
         reg_eip = shellcode_start + 1;
-        fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
+        if (debuglog) {
+            fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
+        }
     }
 }
 
@@ -1088,7 +1101,9 @@ void apply_delayed_despawn(const Despawn &despawn) {
         }
         SegSet16(cs, DS);
         reg_eip = shellcode_start + 1;
-        fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
+        if (debuglog) {
+              fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
+        }
     }
 }
 
@@ -1172,6 +1187,7 @@ void apply_frame(const Frame &frame, bool applyOwnLocation=false) {
         if (client) {
             client->last_written_mission_status = frame.mission_end().game_update();
             client->mission_tree_progress = frame.mission_end().mission_tree_progress();
+            client->last_received_victory_points_plus_one = frame.mission_end().victory_points_plus_one();
         }
     }
     for (int i = 0; i < frame.update_size(); i++) {
@@ -1642,7 +1658,8 @@ b - missile
 c - ship
 d - capship
  */
-
+bool enable_damage = true;
+bool enable_all_damage = true;
 void process_trampoline() {
     //fprintf(stderr, "Trampoline: start %d\n", (int)queuedEvents.size());
     gIsProcessingTrampoline = true;
@@ -1736,7 +1753,7 @@ void process_trampoline() {
         }
         if (ev.has_damage()) {
             fprintf(stderr, "Trampoline: starting damage\n");
-            /*Cheat mode:if (ev.damage().ship_id() != 0 && ev.damage().ship_id() != 1) */{
+            /*Cheat mode:*/if (enable_all_damage || (enable_damage && ev.damage().ship_id() != 0 && ev.damage().ship_id() != 1)) {
                 apply_damage(ev.damage());
             }
         }
@@ -1867,6 +1884,11 @@ void  load_mission_tree_progress(const std::string mission_tree_data){
     
 }
 
+void populate_mission_addendum(MissionEnd *mission_end) {
+    Bit16u victory_status = mem_readw(DS_OFF + DS_victoryPoints);
+    mission_end->set_victory_points_plus_one(1 + (Bit32u)victory_status);
+}
+
 void populate_mission_end(MissionEnd *mission_end) {
     Bit16u mission_status = mem_readw(DS_OFF + 0xae);
     mission_end->set_game_update((GameState)mission_status);
@@ -1885,6 +1907,15 @@ void populate_mission_end(MissionEnd *mission_end) {
 }
 
 void wc_net_check_cpu_hooks() {
+    if (reg_eip == 0x112e    && isExecutingOverlay(STUB162, 0x2a)) { // simulator start
+        in_simulation += 1;
+    }
+    if (in_simulation) {
+        if (reg_eip == 0x132c && isExecutingOverlay(STUB162, 0x2a)) { // simulator end
+            in_simulation -= 1;
+        }
+        return;
+    }
     /*{
         Bit16u stubSeg = STUB145;
         Bit16u stubOff = 0x00b6;
@@ -1936,6 +1967,22 @@ void wc_net_check_cpu_hooks() {
         /*FILE * fp = fopen("/tmp/mission_log", "a");
         fprintf(fp, "%d: %d %d %d\n", !!client, victory_status, mission_id, series_id);
         fclose(fp);*/
+        if (server) {
+            MissionEnd *mission_end = pendingState.frame().mutable_mission_end();
+            populate_mission_addendum(mission_end);
+            fprintf(stderr, "\nSetting victory status to %d\n", mission_end->victory_points_plus_one());
+            fprintf(stdout, "\nSetting victory status to %d\n", mission_end->victory_points_plus_one());
+            gSendFrameAtEndOfTrampoline = true; // hax to force send of network data
+            process_network(true);
+        }
+        if (client) {
+            fprintf(stderr, "\nSetting victory status to %d\n", client->last_received_victory_points_plus_one);
+            fprintf(stdout, "\nSetting victory status to %d\n", client->last_received_victory_points_plus_one);
+            if (client->last_received_victory_points_plus_one) {
+                mem_writew(DS_OFF + DS_victoryPoints, client->last_received_victory_points_plus_one - 1);
+            }
+            client->last_received_victory_points_plus_one = 0;
+        }
     }
     if (skipBarracks && isExecutingFunction(STUB150, 0x00AC)) {
         skipBarracks = false;
@@ -1958,7 +2005,7 @@ void wc_net_check_cpu_hooks() {
             }
         }
     }
-    if (reg_eip == 0x210f && SegValue(cs) == SEG001) { // mission has ended for some reason
+    if (reg_eip == 0x4dd && isExecutingOverlay(STUB161, 0x20)) { // mission ended for some reason, at correct callsite
         if (client) {
             if (client->mission_tree_progress.length()) {
                 load_mission_tree_progress(client->mission_tree_progress);
@@ -1979,11 +2026,11 @@ void wc_net_check_cpu_hooks() {
                 }
                 MissionEnd *mission_end = pendingState.frame().mutable_mission_end();
                 populate_mission_end(mission_end);
-                
-                if (server) {
-                    gSendFrameAtEndOfTrampoline = true; // hax to force send of network data
-                } 
-                process_network(true);
+                if (mission_status == EndDeath || mission_status == EndCarrier) {
+                    gSendFrameAtEndOfTrampoline = true; // hax to force send of network data on death
+                    // since these skip computing victory scenarios
+                    process_network(true);
+                }
             }
         }
     }

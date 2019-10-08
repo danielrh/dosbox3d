@@ -135,7 +135,9 @@ enum {
     STUB148 = 0x1318,
     STUB150 = 0x1327,
     STUB151 = 0x1333,
-    STUB161 = 0x1361,
+    STUB161 = 0x1361, // ida: 11bf
+    STUB162 = 0x1366, // ida: 11c4
+    STUB163 = 0x1370, // ida: 11ce
     STUB164 = 0x1381, // ida: 11df
 };
 
