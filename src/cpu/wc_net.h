@@ -162,7 +162,11 @@ enum DataSegValues {
     //DS_tmpvector = DS_Pos + (12 * 0x3f)
     DS_parent_ship = 0xC30E,
     DS_entity_types = 0xBD1A,
-    DS_entity_allocated = 0xACC4
+    DS_entity_allocated = 0xACC4,
+    DS_victoryPoints = 0xC280,
+    DS_missionId = 0xC255,
+    DS_seriesId = 0xC256,
+    DS_hasLoadedSaveGame = 0x300c,
 };
 
 #endif

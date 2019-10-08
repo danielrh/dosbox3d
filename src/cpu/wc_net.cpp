@@ -1122,9 +1122,9 @@ void run_briefing(int missionId, int seriesId) {
 }
 
 void run_campaign(int missionId, int seriesId) {
-    mem_writeb_checked(DS_OFF + 0xC255, missionId);
-    mem_writeb_checked(DS_OFF + 0xC256, seriesId);
-    mem_writeb_checked(DS_OFF + 0x300C, 1); // has loaded save game
+    mem_writeb_checked(DS_OFF + DS_missionId, missionId);
+    mem_writeb_checked(DS_OFF + DS_seriesId, seriesId);
+    mem_writeb_checked(DS_OFF + DS_hasLoadedSaveGame, 1); // has loaded save game
     CPU_Push16((Bit16u)SegValue(cs));
     CPU_Push16((Bit16u)reg_eip + 5);
     SegSet16(cs, STUB161);
@@ -1845,8 +1845,8 @@ bool skipBarracks = false;
 
 
 
-const size_t mission_tree_start = 53832;
-const size_t mission_tree_size = 80;
+const size_t mission_tree_start = 0xd25d; // this is where the navPointState struct starts at 53853
+const size_t mission_tree_size = 8 * 19;
 
 void  load_mission_tree_progress(const std::string mission_tree_data){
     if (mission_tree_data.length() != mission_tree_size) {
@@ -1928,6 +1928,14 @@ void wc_net_check_cpu_hooks() {
          reg_eax = 12; // force ephemeral objects to a specific slot
          reg_eip = 0x1ce0; // ovr140 retf
         */
+    }
+    if (reg_eip == 0x251 && isExecutingOverlay(STUB161, 0x20)) {
+        Bit16u victory_status = mem_readw(DS_OFF + DS_victoryPoints);
+        Bit16u mission_id = mem_readw(DS_OFF + DS_missionId);
+        Bit16u series_id = mem_readw(DS_OFF + DS_seriesId);
+        /*FILE * fp = fopen("/tmp/mission_log", "a");
+        fprintf(fp, "%d: %d %d %d\n", !!client, victory_status, mission_id, series_id);
+        fclose(fp);*/
     }
     if (skipBarracks && isExecutingFunction(STUB150, 0x00AC)) {
         skipBarracks = false;
