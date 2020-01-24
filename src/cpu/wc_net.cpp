@@ -18,7 +18,6 @@
 #include "wc_net.h"
 #include "../wc.pb.h"
 NetConfig net_config;
-
 bool DEBUG_PROTOBUF =
 #ifdef HEAVY_NET_DEBUG
     true
@@ -36,12 +35,19 @@ Bit8u u8(Bit32u data) {
 }
 
 NetConfig::NetConfig() {
-    host = getenv("WCHOST");
-    portstr = getenv("WCPORT");
-    portstr = portstr ? portstr : "13255";
-    port = (uint16_t)atoi(portstr);
-    if (port < 1024) {
-        fprintf(stderr, "You must set the WCPORT and (optionally) WCHOST env variables!\n");
+    reset_from_env();
+}
+void NetConfig::reset_from_env() {
+    this->reset(
+        getenv("WCHOST"),
+        getenv("WCPORT"));
+}
+void NetConfig::reset(const char *host, const char* portstr) {
+    this->host = host;
+    this->portstr = portstr ? portstr : "13255";
+    this->port = (uint16_t)atoi(this->portstr);
+    if (this->port < 1024) {
+        fprintf(stderr, "You must set the WCPORT and (optionally) WCHOST env variables! Not %s\n", this->portstr);
         abort();
     }
 }
@@ -188,7 +194,7 @@ struct ServerState {
             c->disconnect();
         }
     }
-} *server;
+} *server = NULL;
 
 
 struct ClientState {
@@ -273,7 +279,7 @@ struct ClientState {
             netToLocalMapping[netid] = localid;
         }
     }
-} *client;
+} *client = NULL;
 
 bool is_net_id_mapped(int net_id) {
     if (server) {
@@ -414,7 +420,9 @@ QueuedEvent gCurrentEvent;
 bool gSyncCurrentEvent;
 std::vector<Bit16u> lastObjectMap;
 
-bool isServer = (getenv("WCHOST") == NULL);
+bool isServer() {
+    return getenv("WCHOST") == NULL;
+}
 int gFrameNum = 0;
 bool gIgnoreNextProcessNetwork = false;
 bool gIsProcessingTrampoline = false;
@@ -425,6 +433,7 @@ FILE *debuglog = stderr;//fopen("/tmp/debug.txt", "a");
 FILE *debuglog = NULL;
 #endif
 void uninit_network() {
+    net_config.reset_from_env();
     pendingState.frameMessage.Clear();
     if (server) {
         delete server;
@@ -438,8 +447,8 @@ void uninit_network() {
 
 void print_banner();
 
-void init_network() {
-    
+bool init_network() {
+    net_config.reset_from_env();
     struct addrinfo hints, *res, *res0;
     int error;
     int s;
@@ -503,7 +512,7 @@ void init_network() {
             perror(cause);
             uninit_network();
             freeaddrinfo(res0);
-            return;
+            return false;
     }
     freeaddrinfo(res0);
     if (server) {
@@ -513,6 +522,7 @@ void init_network() {
         client->clientSocket = s;
     }
     print_banner();
+    return true;
 }
 
 //GameState gs;
@@ -1483,7 +1493,7 @@ public:
     }
 
     bool should_run_locally() {
-        return isServer;
+        return isServer();
     }
 
     void debug() {
@@ -1513,11 +1523,11 @@ public:
     }
 
     bool should_sync() {
-        return isServer;
+        return isServer();
     }
 
     bool should_run_locally() {
-        return isServer;
+        return isServer();
     }
 
     Bit16u ret_addr() {
@@ -1553,11 +1563,11 @@ public:
     }
 
     bool should_sync() {
-        return isServer;
+        return isServer();
     }
 
     bool should_run_locally() {
-        return isServer;
+        return isServer();
     }
 
     Bit16u ret_addr() {
@@ -1625,7 +1635,7 @@ public:
         if (isWingmanDeath) {
             fprintf(stderr, "Ignoring wingman death %d\n", shipid.to_net());
         }
-        return isServer && !isWingmanDeath;
+        return isServer() && !isWingmanDeath;
     }
 
     bool should_run_locally() {
@@ -1723,7 +1733,7 @@ void process_trampoline() {
             }
             pendingState.add_ship(spawn);
             if (!queuedEvents.empty()) {
-                if (isServer) {
+                if (isServer()) {
                     fprintf(stderr, "Bad: there are extra queued events!\n");
                 }
             }
@@ -2052,7 +2062,7 @@ void wc_net_check_cpu_hooks() {
            reg_eip = 0x918; // should stop AI ability to set_speed
         }
     }
-    if (!isServer && SegValue(cs) == SEG001 && reg_eip == 0x1695) {
+    if (SegValue(cs) == SEG001 && reg_eip == 0x1695 && !isServer()) {
         // Disable autopilot function keypress for non-server.
         // Only server can run autopilot. They will tell clients to show external camera.
         reg_eip += 5;

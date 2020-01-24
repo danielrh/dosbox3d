@@ -35,7 +35,9 @@
 #include "timer.h"
 #include "programs.h"
 #include "pic.h"
-
+#include "../cpu/net_config.h"
+bool init_network();
+void uninit_network();
 class WCNET : public Program {
 public:
 	void HelpCommand(const char *helpStr) {
@@ -110,11 +112,26 @@ public:
 					return;
 				}
 				return;
-			} 
+			}
+            const char * DEFAULT_PORT = "13255";
 			if(strcasecmp("startserver", temp_line.c_str()) == 0) {
-				return;
+				unsetenv("WCHOST");
+				if(cmd->FindCommand(2, temp_line)) {
+                    setenv("WCPORT", temp_line.c_str(), 1);
+				} else {
+                    setenv("WCPORT", DEFAULT_PORT, 1);
+                }
+                uninit_network();
+                bool ok = init_network();
+                if (ok) {
+                    WriteOut("TCP/IP WC server started %s.\n", net_config.portstr);
+                }else {
+                    WriteOut("TCP/IP WC server FAILED to start %s.\n", net_config.portstr);
+                }
+                return;
 			}
 			if(strcasecmp("stopserver", temp_line.c_str()) == 0) {
+                uninit_network();
 				return;
 			}
 			if(strcasecmp("connect", temp_line.c_str()) == 0) {
@@ -126,24 +143,24 @@ public:
 					WriteOut("TCP Server address not specified.\n");
 					return;
 				}
-                char *strHost = strdup(temp_line.c_str());
-                const char * udpPort;
-
-				if(!cmd->FindCommand(3, temp_line)) {
-					udpPort = "13255";
-				} else {
-					udpPort = strdup(temp_line.c_str());
+                setenv("WCHOST", temp_line.c_str(), 1);
+				if(cmd->FindCommand(3, temp_line)) {
+                    setenv("WCPORT", temp_line.c_str(), 1);
+                } else {
+                    setenv("WCPORT", DEFAULT_PORT, 1);
 				}
-/*
-				if(ConnectToServer(strHost)) {
-                	WriteOut("IPX Tunneling Client connected to server at %s.\n", strHost);
-				} else {
-					WriteOut("IPX Tunneling Client failed to connect to server at %s.\n", strHost);
-                    }*/
+                uninit_network();
+                bool ok = init_network();
+                if (ok) {
+                    WriteOut("TCP/IP WC Client connected to %s:%s.\n", net_config.host, net_config.portstr);
+                } else {
+                    WriteOut("TCP/IP WC Client failed to connect to %s:%s.\n", net_config.host, net_config.portstr);
+                }
 				return;
 			}
 			
 			if(strcasecmp("disconnect", temp_line.c_str()) == 0) {
+                uninit_network();
 				return;
 			}
 

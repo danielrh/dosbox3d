@@ -1,6 +1,6 @@
 #ifndef WC_NET_H_
 #define WC_NET_H_
-
+#include "net_config.h"
 void wc_net_check_cpu_hooks();
 
 void process_network(bool ignoreClientUpdate=false);
@@ -8,15 +8,6 @@ void process_damage();
 void process_fire();
 
 void go_to_trampoline();
-
-class NetConfig {
-public:
-    const char *host;
-    const char *portstr;
-    uint16_t port;
-    NetConfig();
-};
-extern NetConfig net_config;
 
 struct RecvStatus {
     bool _ok;
