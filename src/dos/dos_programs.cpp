@@ -45,7 +45,7 @@
 #define INCL_DOSERRORS
 #include "os2.h"
 #endif
-
+void WCNET_ProgramStart(Program * * make);
 #if C_DEBUG
 Bitu DEBUG_EnableDebugger(void);
 #endif
@@ -1722,4 +1722,5 @@ void DOS_SetupPrograms(void) {
 #endif
 	PROGRAMS_MakeFile("IMGMOUNT.COM", IMGMOUNT_ProgramStart);
 	PROGRAMS_MakeFile("KEYB.COM", KEYB_ProgramStart);
+    PROGRAMS_MakeFile("WCNET.COM",WCNET_ProgramStart);
 }

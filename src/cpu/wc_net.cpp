@@ -199,10 +199,12 @@ struct ClientState {
     GameState last_written_mission_status;
     uint32_t last_received_victory_points_plus_one;
     std::string mission_tree_progress;
+    bool is_fresh;
     ClientState()
       : clientSocket(-1),
        shipId(NetworkShipId::from_net(0)),
-       last_received_victory_points_plus_one(0)
+       last_received_victory_points_plus_one(0),
+       is_fresh(true)
     {
         last_written_mission_status = Proceed;
         const char *cs = getenv("WCCALLSIGN");
@@ -434,7 +436,10 @@ void uninit_network() {
     }
 }
 
+void print_banner();
+
 void init_network() {
+    
     struct addrinfo hints, *res, *res0;
     int error;
     int s;
@@ -507,6 +512,7 @@ void init_network() {
     if (client) {
         client->clientSocket = s;
     }
+    print_banner();
 }
 
 //GameState gs;
@@ -1283,26 +1289,28 @@ void process_network(bool ignoreClientUpdate) {
     networkMessage.Clear();
     if (!client && !server) {
         init_network();
-        if (client) {
-            networkMessage.Clear();
-            Connect *connect = networkMessage.mutable_connect();
-            connect->set_callsign(client->callsign);
-            if (!send_msg(client->clientSocket, networkMessage).ok()) {
-                uninit_network();
-                return;
-            }
-            networkMessage.Clear();
-            if (!recv_msg<&NetworkMessage::has_game>(client->clientSocket, networkMessage).ok()) {
-                uninit_network();
-                return;
-            }
-            const Game &game = networkMessage.game();
-            if (game.has_starting_state()) {
-                client->shipId = NetworkShipId::from_net(game.assigned_player_id());
-                apply_starting_frame(game.starting_state());
-            }
+    }
+    if (client && client->is_fresh) {
+        networkMessage.Clear();
+        Connect *connect = networkMessage.mutable_connect();
+        connect->set_callsign(client->callsign);
+        if (!send_msg(client->clientSocket, networkMessage).ok()) {
+            uninit_network();
+            return;
         }
-        print_banner();
+        networkMessage.Clear();
+        if (!recv_msg<&NetworkMessage::has_game>(client->clientSocket, networkMessage).ok()) {
+            uninit_network();
+            return;
+        }
+        if (client) {
+            client->is_fresh = false;
+        }
+        const Game &game = networkMessage.game();
+        if (game.has_starting_state()) {
+            client->shipId = NetworkShipId::from_net(game.assigned_player_id());
+            apply_starting_frame(game.starting_state());
+        }
     }
 
     if (server) {
