@@ -1562,10 +1562,13 @@ static void DrawText(Bitu x,Bitu y,const char * text,Bit8u color, Bit8u *surface
     Bit8u * end_draw = surface + sdl.draw.height * pitch;
     Bitu start_para = x;
     while (*text &&  x + 8 <= sdl.draw.width && y + 14 < sdl.draw.height) {
-        if (draw - start_draw + 8*step + start_para*step > pitch) {
-            start_draw += pitch*14;
-            draw = start_draw;
-        }
+        for (int sub_i =0;sub_i < 16 && text[sub_i] && text[sub_i] != ' '; sub_i+=1) {
+                if (draw - start_draw + (sub_i+1)*8*step + start_para*step > pitch) {
+                    start_draw += pitch*14;
+                    draw = start_draw;
+                    break; // simple word wrap
+                }
+            }
 		Bit8u * font=&int10_font_14[(*text)*14];
 		Bitu i,j;Bit8u * draw_line=draw;
 		for (i=0;i<14;i++) {
@@ -1591,8 +1594,8 @@ void GFX_EndUpdate( const Bit16u *changedLines ) {
     Bit16u fakeChangedLines[2];
     if (true) {
         if (textPixels) {
-            DrawText(64,48, incoming_text.c_str(), 0x80, textPixels, textPitch);
-            DrawText(64,48 + 14 + 14, outgoing_text.c_str(), 0x80, textPixels, textPitch);
+            DrawText(48,48, incoming_text.c_str(), 0x80, textPixels, textPitch);
+            DrawText(48,48 + 14 + 14, outgoing_text.c_str(), 0x80, textPixels, textPitch);
         }
         fakeChangedLines[0] = sdl.draw.height;
         fakeChangedLines[1] = 1;
