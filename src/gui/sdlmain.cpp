@@ -261,6 +261,8 @@ struct SDL_Block {
 };
 
 static SDL_Block sdl;
+static Bit8u *textPixels = NULL;
+static Bitu textPitch = 0;
 
 #if !SDL_VERSION_ATLEAST(2,0,0)
 
@@ -524,6 +526,9 @@ check_gotbpp:
 
 
 void GFX_ResetScreen(void) {
+	textPixels=NULL;
+	textPitch = 0;
+    
 	GFX_Stop();
 	if (sdl.draw.callback)
 		(sdl.draw.callback)( GFX_CallBackReset );
@@ -532,6 +537,8 @@ void GFX_ResetScreen(void) {
 }
 
 void GFX_ForceFullscreenExit(void) {
+	textPixels=NULL;
+	textPitch = 0;
 	if (sdl.desktop.lazy_fullscreen) {
 //		sdl.desktop.lazy_fullscreen_req=true;
 		LOG_MSG("GFX LF: invalid screen change");
@@ -551,6 +558,8 @@ static int int_log2 (int val) {
 #if SDL_VERSION_ATLEAST(2,0,0)
 
 static SDL_Window * GFX_SetSDLWindowMode(Bit16u width, Bit16u height, bool fullscreen, SCREEN_TYPES screenType) {
+	textPixels=NULL;
+	textPitch = 0;
 	static SCREEN_TYPES lastType = SCREEN_SURFACE;
 	if (sdl.renderer) {
 		SDL_DestroyRenderer(sdl.renderer);
@@ -638,6 +647,8 @@ static SDL_Window * GFX_SetSDLWindowMode(Bit16u width, Bit16u height, bool fulls
 // Used for the mapper UI and more: Creates a fullscreen window with desktop res
 // on Android, and a non-fullscreen window with the input dimensions otherwise.
 SDL_Window * GFX_SetSDLSurfaceWindow(Bit16u width, Bit16u height) {
+    textPixels=NULL;
+    textPitch = 0;
 	return GFX_SetSDLWindowMode(width, height, false, SCREEN_SURFACE);
 }
 
@@ -744,6 +755,8 @@ static SDL_Surface * GFX_SetupSurfaceScaled(Bit32u sdl_flags, Bit32u bpp)
 
 #if 0 // NOTE: Do we need this? Never used and can't be used as-is with SDL 2.0
 void GFX_TearDown(void) {
+	textPixels=NULL;
+	textPitch = 0;
 	if (sdl.updating)
 		GFX_EndUpdate( 0 );
 
@@ -755,6 +768,8 @@ void GFX_TearDown(void) {
 #endif
 
 Bitu GFX_SetSize(Bitu width,Bitu height,Bitu flags,double scalex,double scaley,GFX_CallBack_t callback) {
+	textPixels=NULL;
+	textPitch = 0;
 	if (sdl.updating)
 		GFX_EndUpdate( 0 );
 
@@ -1307,8 +1322,7 @@ void GFX_RestoreMode(void) {
 	GFX_UpdateSDLCaptureState();
 }
 
-
-bool GFX_StartUpdate(Bit8u * & pixels,Bitu & pitch) {
+bool Inner_GFX_StartUpdate(Bit8u * & pixels,Bitu & pitch) {
 #if SDL_VERSION_ATLEAST(2,0,0)
 	if (!sdl.update_display_contents)
 		return false;
@@ -1389,8 +1403,7 @@ bool GFX_StartUpdate(Bit8u * & pixels,Bitu & pitch) {
 	return false;
 }
 
-
-void GFX_EndUpdate( const Bit16u *changedLines ) {
+void Inner_GFX_EndUpdate( const Bit16u *changedLines ) {
 #if (HAVE_DDRAW_H) && defined(WIN32)
 	int ret;
 #endif
@@ -1532,6 +1545,51 @@ void GFX_EndUpdate( const Bit16u *changedLines ) {
 	default:
 		break;
 	}
+}
+bool GFX_StartUpdate(Bit8u * & pixels,Bitu & pitch) {
+    bool ret = Inner_GFX_StartUpdate(pixels, pitch);
+    textPixels = pixels;
+    textPitch = pitch;
+    return ret;
+}
+extern Bit8u int10_font_14[256 * 14];
+static void DrawText(Bitu x,Bitu y,const char * text,Bit8u color, Bit8u *surface, Bitu pitch) {
+    Bitu step  = pitch /sdl.draw.width;
+	Bit8u * draw=surface + x * step + y * pitch;
+    Bit8u * end_draw = surface + sdl.draw.height * pitch;
+    while (*text &&  x + 8 <= sdl.draw.width && y + 14 < sdl.draw.height) {
+		Bit8u * font=&int10_font_14[(*text)*14];
+		Bitu i,j;Bit8u * draw_line=draw;
+		for (i=0;i<14;i++) {
+			Bit8u map=*font++;
+			for (j=0;j<8;j++) {
+				if (map & 0x80) {
+                    memset((draw_line+j*step), color, step);
+                } else {
+                    for (int inner =0 ; inner < step; inner +=1) {
+                        *(draw_line+j*step + inner) >>=1;
+                    }
+                }
+				//else *(draw_line+j)=0;
+				map<<=1;
+			}
+			draw_line+=pitch;
+		}
+		text++;draw+=8 * step; x += 1;
+	}
+}
+
+void GFX_EndUpdate( const Bit16u *changedLines ) {
+    Bit16u fakeChangedLines[2];
+    if (true) {
+        if (textPixels) {
+            DrawText(0,0, "HELLOTE This is a test of the emergency braodcast system", 0x80, textPixels, textPitch);
+        }
+        fakeChangedLines[0] = sdl.draw.height;
+        fakeChangedLines[1] = 1;
+        changedLines = fakeChangedLines;
+    }
+    Inner_GFX_EndUpdate(changedLines );
 }
 
 
