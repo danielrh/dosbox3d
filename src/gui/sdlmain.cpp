@@ -1552,12 +1552,20 @@ bool GFX_StartUpdate(Bit8u * & pixels,Bitu & pitch) {
     textPitch = pitch;
     return ret;
 }
+std::string incoming_text="INCOMING TEXT FROM SONEONE";
+std::string outgoing_text="OUTGOING TEXT THAT GOES ON AND ON AND ON AND ON AND ON AND ON AND ON AND ON AND ON";
 extern Bit8u int10_font_14[256 * 14];
 static void DrawText(Bitu x,Bitu y,const char * text,Bit8u color, Bit8u *surface, Bitu pitch) {
     Bitu step  = pitch /sdl.draw.width;
 	Bit8u * draw=surface + x * step + y * pitch;
+    Bit8u * start_draw = surface + x * step + y * pitch;
     Bit8u * end_draw = surface + sdl.draw.height * pitch;
+    Bitu start_para = x;
     while (*text &&  x + 8 <= sdl.draw.width && y + 14 < sdl.draw.height) {
+        if (draw - start_draw + 8*step + start_para*step > pitch) {
+            start_draw += pitch*14;
+            draw = start_draw;
+        }
 		Bit8u * font=&int10_font_14[(*text)*14];
 		Bitu i,j;Bit8u * draw_line=draw;
 		for (i=0;i<14;i++) {
@@ -1583,7 +1591,8 @@ void GFX_EndUpdate( const Bit16u *changedLines ) {
     Bit16u fakeChangedLines[2];
     if (true) {
         if (textPixels) {
-            DrawText(0,0, "HELLOTE This is a test of the emergency braodcast system", 0x80, textPixels, textPitch);
+            DrawText(64,48, incoming_text.c_str(), 0x80, textPixels, textPitch);
+            DrawText(64,48 + 14 + 14, outgoing_text.c_str(), 0x80, textPixels, textPitch);
         }
         fakeChangedLines[0] = sdl.draw.height;
         fakeChangedLines[1] = 1;
