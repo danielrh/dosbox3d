@@ -160,6 +160,7 @@ enum DataSegValues {
     DS_missionId = 0xC255,
     DS_seriesId = 0xC256,
     DS_hasLoadedSaveGame = 0x300c,
+    DS_commText = 0x8df8,
 };
 
 #endif

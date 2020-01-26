@@ -54,6 +54,7 @@ message ShipUpdate {
         optional uint32 ship_id = 1; // 16 bits
         optional Location loc = 2;
 
+        optional string comm_message = 254;
         optional string callsign_update = 255;
 }
 

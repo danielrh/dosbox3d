@@ -404,3 +404,122 @@ case statement from hell
 12CC:0048  EAD214A534          jmp  34A5:14D2
 12CC:004D  EA5519A534          jmp  34A5:1955
 12CC:0052  EA9D20A534          jmp  34A5:209D
+
+
+
+comm text gets set in a memcpy:
+2FFE:0774  50                  push ax
+2FFE:0775  FF7608              push word [bp+08]           ss:[FF36]=13D3
+2FFE:0778  FF7606              push word [bp+06]           ss:[FF34]=9772
+2FFE:077B  9A0A004C0B          call 0B4C:000A
+2FFE:0780  FF760A              push word [bp+0A]           ss:[FF38]=001E      
+2FFE:0783  A0192E              mov  al,[2E19]              ds:[2E19]=5047
+2FFE:0786  B400                mov  ah,00
+2FFE:0788  50                  push ax
+2FFE:0789  1E                  push ds
+2FFE:078A  B8F88D              mov  ax,8DF8
+
+
+2FFE:0B48  83C406              add  sp,0006
+2FFE:0B4B  8BE5                mov  sp,bp
+2FFE:0B4D  5D                  pop  bp
+2FFE:0B4E  CB                  retf
+
+
+3138:3414  E80DD8              call 00000C24 ($-27f3)
+3138:3417  0BC0                or   ax,ax
+3138:3419  750D                jne  00003428 ($+d)         (down)
+3138:341B  FF7608              push word [bp+08]           ss:[FFA6]=0009
+3138:341E  FF7606              push word [bp+06]           ss:[FFA4]=0002
+3138:3421  9A3E009C12          call 129C:003E  <-- 
+3138:3426  59                  pop  cx
+3138:3427  59                  pop  cx
+3138:3428  5D                  pop  bp
+3138:3429  CB                  retf
+
+3138:2F42  8A46FF              mov  al,[bp-01]             ss:[FFA9]=B002      
+3138:2F45  98                  cbw
+3138:2F46  50                  push ax
+3138:2F47  90                  nop
+3138:2F48  0E                  push cs
+3138:2F49  E8A104              call 000033ED ($+4a1)
+3138:2F4C  59                  pop  cx
+3138:2F4D  59                  pop  cx
+3138:2F4E  8A46FF              mov  al,[bp-01]             ss:[FFA9]=B002
+3138:2F51  98                  cbw
+3138:2F52  8BD8                mov  bx,ax
+3138:2F54  C68736D2FF          mov  byte [bx-2DCA],FF      ds:[69A8]=FFFF
+3138:2F59  FE46FF              inc  byte [bp-01]           ss:[FFA9]=B002
+3138:2F5C  0E                  push cs
+3138:2F5D  E8C4DC              call 00000C24 ($-233c)
+3138:2F60  0BC0                or   ax,ax
+3138:2F62  7506                jne  00002F6A ($+6)         (down)
+3138:2F64  807EFF09            cmp  byte [bp-01],09
+ss:[FFA9]=B002
+
+3138:3666  0E                  push cs
+3138:3667  E838D1              call 000007A2 ($-2ec8)
+3138:366A  0E                  push cs
+3138:366B  E81EFB              call 0000318C ($-4e2)
+3138:366E  0E                  push cs
+3138:366F  E889F8              call 00002EFB ($-777) <-
+3138:3672  0E                  push cs
+3138:3673  E8D0D8              call 00000F46 ($-2730)
+3138:3676  0E                  push cs
+3138:3677  E8D0FD              call 0000344A ($-230)
+3138:367A  5D                  pop  bp
+3138:367B  CB                  retf
+
+
+0560:2100  E8BDFD              call 00001EC0 ($-243) <-- sets comm, string
+0560:2103  9A19026A12          call 126A:0219 <-- print text??
+0560:2108  833EAE0000          cmp  word [00AE],0000       ds:[00AE]=0000      
+0560:210D  74D4                je   000020E3 ($-2c)        (no jmp)
+0560:210F  833EAE0001          cmp  word [00AE],0001       ds:[00AE]=0000
+0560:2114  751C                jne  00002132 ($+1c)        (down)
+0560:2116  B002                mov  al,02
+0560:2118  50                  push ax
+
+
+13D3:01E5  6F                  outsw
+13D3:01E6  6E                  outsb
+13D3:01E7  3A20                cmp  ah,[bx+si]             ds:[9EA2]=A000
+13D3:01E9  256C75              and  ax,756C
+13D3:01EC  55                  push bp
+13D3:01ED  8BEC                mov  bp,sp
+13D3:01EF  90                  nop
+13D3:01F0  5D                  pop  bp
+13D3:01F1  CB                  retf
+
+0560:20CF  50                  push ax                     
+0560:20D0  9A0600290D          call 0D29:0006
+0560:20D5  C706C6000000        mov  word [00C6],0000       ds:[00C6]=0000
+0560:20DB  C706AE000000        mov  word [00AE],0000       ds:[00AE]=0000
+0560:20E1  EB25                jmp  short 00002108 ($+25)  (down)
+0560:20E3  0E                  push cs
+0560:20E4  E880F4              call 00001567 ($-b80) <--
+0560:20E7  3DFFFF              cmp  ax,FFFF
+0560:20EA  7508                jne  000020F4 ($+8)         (no jmp)
+0560:20EC  C706AE000500        mov  word [00AE],0005       ds:[00AE]=0000
+0560:20F2  EB1B                jmp  short 0000210F ($+1b)  (down)
+0560:20F4  833EAE0000          cmp  word [00AE],0000       ds:[00AE]=0000
+0560:20F9  750D                jne  00002108 ($+d)         (no jmp)
+0560:20FB  0E                  push cs
+0560:20FC  E836E6              call 00000735 ($-19ca)
+0560:20FF  0E                  push cs
+
+xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+
+activate comm screen here:
+3138:2F62  7506                jne  00002F6A ($+6)         (down)
+3138:2F64  807EFF09            cmp  byte [bp-01],09        ss:[FFA9]=B002
+3138:2F68  7EB0                jle  00002F1A ($-50)        (up)
+3138:2F6A  B88813              mov  ax,1388
+3138:2F6D  50                  push ax
+3138:2F6E  9A0600ED08          call 08ED:0006 <-- activat espirits comm pix
+
+3138:2F73  59                  pop  cx       
+3138:2F74  3D8613              cmp  ax,1386
+3138:2F77  7F03                jg   00002F7C ($+3)         (no jmp)
+3138:2F79  E98B00              jmp  00003007 ($+8b)        (down)

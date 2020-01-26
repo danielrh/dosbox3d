@@ -1552,8 +1552,9 @@ bool GFX_StartUpdate(Bit8u * & pixels,Bitu & pitch) {
     textPitch = pitch;
     return ret;
 }
+std::string outgoing_prefix = "[Transmit Comms] ";
 std::string incoming_text="INCOMING TEXT FROM SONEONE";
-std::string outgoing_text="OUTGOING TEXT THAT GOES ON AND ON AND ON AND ON AND ON AND ON AND ON AND ON AND ON";
+std::string outgoing_text="";//OUTGOING TEXT THAT GOES ON AND ON AND ON AND ON AND ON AND ON AND ON AND ON AND ON";
 extern Bit8u int10_font_14[256 * 14];
 static void DrawText(Bitu x,Bitu y,const char * text,Bit8u color, Bit8u *surface, Bitu pitch) {
     Bitu step  = pitch /sdl.draw.width;
@@ -2280,6 +2281,8 @@ void GFX_HandleVideoResize(int width, int height) {
 }
 #endif
 
+bool kGlobalKeyDisable = false;
+
 void GFX_Events() {
 	SDL_Event event;
 #if defined (REDUCE_JOYSTICK_POLLING)
@@ -2503,8 +2506,50 @@ void GFX_Events() {
 			} 
 #endif
 		default:
+            {
 			void MAPPER_CheckEvent(SDL_Event * event);
+            if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_0 && !kGlobalKeyDisable) {
+                kGlobalKeyDisable = true;
+                outgoing_text = outgoing_prefix;
+#if SDL_VERSION_ATLEAST(2,0,0)
+                SDL_StartTextInput();
+#endif
+                // Start typing!
+            }
+            if (event.type == SDL_KEYUP && (
+                    event.key.keysym.sym == SDLK_KP_ENTER ||
+                    event.key.keysym.sym == SDLK_RETURN ||
+                    event.key.keysym.sym == SDLK_RETURN2) && kGlobalKeyDisable) {
+                kGlobalKeyDisable = false;
+#if SDL_VERSION_ATLEAST(2,0,0)
+                SDL_StopTextInput();
+#endif
+                outgoing_text = outgoing_text.substr(outgoing_prefix.length());
+            }
+#if SDL_VERSION_ATLEAST(2,0,0)
+            if (event.type == SDL_TEXTINPUT)
+#endif
+#if !SDL_VERSION_ATLEAST(2,0,0)
+            if (event.type == SDL_KEYDOWN)
+#endif
+            {
+#if SDL_VERSION_ATLEAST(2,0,0)
+                const char *str = event.text.text;
+#endif
+#if !SDL_VERSION_ATLEAST(2,0,0)
+                const char asciichar[2] = {
+                    (event.key.keysym.unicode > 255) ? 255 : (char)(unsigned char)(event.key.keysym.unicode),
+                    0
+                };
+                const char *str = asciichar;
+#endif
+                outgoing_text += str;
+            }
+            if ((event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) && kGlobalKeyDisable) {
+                return;
+            }
 			MAPPER_CheckEvent(&event);
+            }
 		}
 	}
 }
