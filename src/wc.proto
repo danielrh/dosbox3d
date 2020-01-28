@@ -112,8 +112,14 @@ message Game {
     optional Frame starting_state = 3;
 }
 
+message ClientStartMissionReq {
+
+}
 message NetworkMessage {
     optional Connect connect = 1;
     optional Game game = 2;
     optional Frame frame = 3;
+    optional ClientStartMissionReq start_mission_req = 4;
+    optional uint32 epoch = 5;
+    optional uint64 frame_number = 6;
 }

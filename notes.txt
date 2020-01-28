@@ -431,7 +431,7 @@ comm text gets set in a memcpy:
 3138:3419  750D                jne  00003428 ($+d)         (down)
 3138:341B  FF7608              push word [bp+08]           ss:[FFA6]=0009
 3138:341E  FF7606              push word [bp+06]           ss:[FFA4]=0002
-3138:3421  9A3E009C12          call 129C:003E  <-- 
+3138:3421  9A3E009C12          call 129C:003E  <-- (3138 == ovr 134)
 3138:3426  59                  pop  cx
 3138:3427  59                  pop  cx
 3138:3428  5D                  pop  bp
@@ -523,3 +523,5 @@ activate comm screen here:
 3138:2F74  3D8613              cmp  ax,1386
 3138:2F77  7F03                jg   00002F7C ($+3)         (no jmp)
 3138:2F79  E98B00              jmp  00003007 ($+8b)        (down)
+
+

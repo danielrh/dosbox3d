@@ -155,11 +155,14 @@ struct ServerState {
     typedef std::vector<RemoteClient> ClientVec;
     ClientVec clients;
     std::vector<NetworkShipId> allowedShipIds;
-
+    uint32_t epoch;
+    uint64_t frame_number;
     ServerState() {
         listenSocket = -1;
         allowedShipIds.push_back(NetworkShipId::from_net(1));
         allowedShipIds.push_back(NetworkShipId::from_net(3));
+        epoch = 1;
+        frame_number = 0;
     }
 
     RemoteClient *get_client(NetworkShipId id) {
@@ -206,11 +209,17 @@ struct ClientState {
     uint32_t last_received_victory_points_plus_one;
     std::string mission_tree_progress;
     bool is_fresh;
+    bool has_restarted_mission;
+    uint32_t epoch;
+    uint64_t frame_number;
     ClientState()
       : clientSocket(-1),
        shipId(NetworkShipId::from_net(0)),
        last_received_victory_points_plus_one(0),
-       is_fresh(true)
+       is_fresh(true),
+       has_restarted_mission(false),
+       epoch(0),  // so it won't match server epoch of 1
+       frame_number(0)
     {
         last_written_mission_status = Proceed;
         const char *cs = getenv("WCCALLSIGN");
@@ -225,6 +234,11 @@ struct ClientState {
         if (clientSocket != -1) {
             really_close(clientSocket);
         }
+    }
+    void reset_mappings() {
+        netToLocalMapping.clear();
+        has_restarted_mission = true;
+        
     }
     bool is_authoritative(NetworkShipId id) {
         if (id == this->shipId) {
@@ -1251,6 +1265,7 @@ bool gSendFrameAtEndOfTrampoline = false;
 void flush_outgoing_frame() {
     if (gSendFrameAtEndOfTrampoline) {
         gSendFrameAtEndOfTrampoline = false;
+        
         for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
             if (!c->is_disconnected()) {
                 const NetworkMessage *frameMessage = &pendingState.frameMessage;
@@ -1267,9 +1282,43 @@ void flush_outgoing_frame() {
             }
         }
         pendingState.frameMessage.Clear();
+        pendingState.frameMessage.set_epoch(server->epoch);
+        pendingState.frameMessage.set_frame_number(server->frame_number);
+        
     }
 }
 
+
+bool send_start_state(NetworkMessage &networkMessage,RemoteClient *cl) {
+    networkMessage.set_epoch(server->epoch);
+    networkMessage.set_frame_number(server->frame_number);
+    Game * game = networkMessage.mutable_game();
+    game->set_assigned_player_id(cl->id.to_net());
+    Frame * frame = game->mutable_starting_state();
+    populate_server_frame(frame);
+    for (std::map<NetworkShipId, Spawn>::iterator it = pendingState.currentlySpawnedShips.begin(); it != pendingState.currentlySpawnedShips.end(); it++) {
+        Event *ev = frame->add_event();
+        *ev->mutable_spawn() = it->second;
+    }
+    std::string debug = networkMessage.DebugString();
+    fprintf(stderr, "Sending starting state to client %d: %s\n",
+            cl->id.to_net(), debug.c_str());
+    if (!send_msg(cl->clientSocket, networkMessage).ok()) {
+        cl->disconnect();
+        return false;
+    }
+    return true;
+}
+void apply_starting_game_to_client(NetworkMessage &networkMessage) {
+    const Game &game = networkMessage.game();
+    if (game.has_starting_state()) {
+        client->shipId = NetworkShipId::from_net(game.assigned_player_id());
+        apply_starting_frame(game.starting_state());
+    }
+    client->epoch = networkMessage.epoch();
+    client->frame_number = networkMessage.frame_number();
+    fprintf(stderr, "epoch %d fno %ld\n", client->epoch, client->frame_number);
+}
 void process_network(bool ignoreClientUpdate) {
     /*
   {
@@ -1300,6 +1349,27 @@ void process_network(bool ignoreClientUpdate) {
     if (!client && !server) {
         init_network();
     }
+    if (client && client->has_restarted_mission) {
+        client->has_restarted_mission = false;
+        networkMessage.Clear();
+        ClientStartMissionReq *restart_req = networkMessage.mutable_start_mission_req();
+        if (!send_msg(client->clientSocket, networkMessage).ok()) {
+            uninit_network();
+            client->is_fresh = true;
+            return;
+        }
+        while (true) {
+            if (!recv_msg<&NetworkMessage::IsInitialized>(client->clientSocket, networkMessage).ok()) {
+                uninit_network();
+                client->is_fresh = true;
+                return;
+            }
+            if (networkMessage.has_game()) {
+                break; // finally we got our reset
+            }
+        }
+        apply_starting_game_to_client(networkMessage);
+    }
     if (client && client->is_fresh) {
         networkMessage.Clear();
         Connect *connect = networkMessage.mutable_connect();
@@ -1316,23 +1386,38 @@ void process_network(bool ignoreClientUpdate) {
         if (client) {
             client->is_fresh = false;
         }
-        const Game &game = networkMessage.game();
-        if (game.has_starting_state()) {
-            client->shipId = NetworkShipId::from_net(game.assigned_player_id());
-            apply_starting_frame(game.starting_state());
-        }
+        apply_starting_game_to_client(networkMessage);
     }
 
     if (server) {
+        server->frame_number += 1;
         populate_server_frame(&pendingState.frame());
         for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
             if (!c->is_disconnected()) {
-                if (!recv_msg<&NetworkMessage::has_frame>(c->clientSocket, networkMessage).ok()) {
+
+                if (!recv_msg<&NetworkMessage::IsInitialized>(c->clientSocket, networkMessage).ok()) {
                     c->disconnect();
                     continue;
                 }
-                if (!ignoreClientUpdate) {
-                    merge_pending_frame(&*c, networkMessage.frame());
+                if (networkMessage.has_start_mission_req()) {
+                    fprintf(stderr, "Sending start-mission state to requestor\n");
+                    send_start_state(networkMessage, &*c);
+                } else if (networkMessage.has_frame()) {
+                    if (networkMessage.epoch() == server->epoch) {
+                        if (!ignoreClientUpdate) {
+                            merge_pending_frame(&*c, networkMessage.frame());
+                        }
+                    }else {
+                        fprintf(stderr, "Ignoring message due to epoch mismatch client_epoch %d server %d\n",
+                                networkMessage.epoch(),
+                                server->epoch);
+                    }
+                } else {
+                    fprintf(stderr, "type mismatch want %s have %s\n",
+                            "has_start_mission_req or has_frame",
+                            message_type(networkMessage));
+                    c->disconnect();
+                    continue;                    
                 }
             }
         }
@@ -1381,24 +1466,14 @@ void process_network(bool ignoreClientUpdate) {
             cl->callsign = connect.callsign();
 
             networkMessage.Clear();
-            Game * game = networkMessage.mutable_game();
-            game->set_assigned_player_id(cl->id.to_net());
-            Frame * frame = game->mutable_starting_state();
-            populate_server_frame(frame);
-            for (std::map<NetworkShipId, Spawn>::iterator it = pendingState.currentlySpawnedShips.begin(); it != pendingState.currentlySpawnedShips.end(); it++) {
-                Event *ev = frame->add_event();
-                *ev->mutable_spawn() = it->second;
-            }
-            std::string debug = frame->DebugString();
-            fprintf(stderr, "Sending starting state to client %d: %s\n",
-                    cl->id.to_net(), debug.c_str());
-            if (!send_msg(s, networkMessage).ok()) {
-                cl->disconnect();
+            if (!send_start_state(networkMessage, cl)) {
                 break;
             }
         }
     } else if (client) {
         networkMessage.Clear();
+        pendingState.frameMessage.set_epoch(client->epoch);
+        pendingState.frameMessage.set_frame_number(++client->frame_number);
         populate_client_frame(&pendingState.frame());
         if (!send_msg(client->clientSocket, pendingState.frameMessage).ok()) {
             uninit_network();
@@ -1409,13 +1484,19 @@ void process_network(bool ignoreClientUpdate) {
             uninit_network();
             return;
         }
-        bool applyOwnPosition = false;
-        for (int i = 0; i < networkMessage.frame().event().size(); i++) {
-            if (networkMessage.frame().event(i).has_autopiloting()) {
-                applyOwnPosition = true;
+        if (client->epoch == networkMessage.epoch()) {
+            bool applyOwnPosition = false;
+            for (int i = 0; i < networkMessage.frame().event().size(); i++) {
+                if (networkMessage.frame().event(i).has_autopiloting()) {
+                    applyOwnPosition = true;
+                }
             }
+            apply_frame(networkMessage.frame(), applyOwnPosition);
+        } else {
+            client->has_restarted_mission = true;
+            fprintf(stderr, "Ignoring frame with epoch %d instead of client's %d... going to resend state\n",
+                    networkMessage.epoch(), client->epoch);
         }
-        apply_frame(networkMessage.frame(), applyOwnPosition);
     }
 
     if (ignoreClientUpdate) {
@@ -1925,12 +2006,24 @@ void populate_mission_end(MissionEnd *mission_end) {
 }
 
 void wc_net_check_cpu_hooks() {
+    if (reg_eip == 0x251 && isExecutingOverlay(STUB161, 0x20)) {
+        pendingState.currentlySpawnedShips.clear();
+        if (client) { //ejected or ended mission
+            fprintf(stderr, "Client is resetting mappings with simulation %d\n", in_simulation);
+            client->reset_mappings(); // clear any network mapping
+        } else if (server) {
+            server->epoch += 1;
+            server->frame_number = 0;
+        }
+    }
     if (reg_eip == 0x112e    && isExecutingOverlay(STUB162, 0x2a)) { // simulator start
         in_simulation += 1;
+        fprintf(stderr, "insim inc to %d\n", in_simulation);
     }
     if (in_simulation) {
         if (reg_eip == 0x132c && isExecutingOverlay(STUB162, 0x2a)) { // simulator end
             in_simulation -= 1;
+        fprintf(stderr, "insim dec to %d\n", in_simulation);
         }
         return;
     }
