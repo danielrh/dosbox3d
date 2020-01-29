@@ -161,6 +161,10 @@ enum DataSegValues {
     DS_seriesId = 0xC256,
     DS_hasLoadedSaveGame = 0x300c,
     DS_commText = 0x8df8,
+    DS_cullStatus = 0xacc4,
+    DS_commAnimInfo = 0xbe94,
+    DS_vduStatus10 = 0xd236,
+    DS_entitiesToDespawn = 0x6610,
 };
 
 #endif

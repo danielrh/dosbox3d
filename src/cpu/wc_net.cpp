@@ -1007,6 +1007,61 @@ void apply_weapon_fire(const WeaponFire &fire) {
     }
 }
 
+
+
+void seg002_0024(uint16_t zero, uint32_t data_at_0xc754) {
+    // UNIMPL
+}
+void stub164_0147(uint16_t ship_id) {
+    mem_writew_checked(DS_OFF + 0xc38c + ship_id * 2, 0x0);
+    mem_writeb_checked(DS_OFF + 0xc854 + ship_id, 0xff);
+    mem_writew_checked(DS_OFF + 0xbe26 + ship_id * 2, 0x0);
+}
+void set_dseg_w(uint32_t base, uint32_t offset, uint16_t val) {
+    mem_writew_checked(((uint32_t)DS_OFF) + base + offset * 2, val);
+}
+void despawn_asm(uint16_t ship_id) {
+    if (ship_id == 0xffff) {
+        return;
+    }
+    set_dseg_w(DS_cullStatus, ship_id, 0x8001);
+    set_dseg_w(0xb862, ship_id, 0);
+    Bit16u di = 0;
+    mem_readw_checked(DS_OFF + 0x07a6, &di);
+    if (di == 0) {
+        mem_writew_checked(DS_OFF + 0x07a6, 0xffff);
+    }
+    mem_readw_checked(DS_OFF + 0x662c, &di);
+    if (di == 0) {
+        mem_writew_checked(DS_OFF + 0x662c, 0xffff);
+    }
+    for (int i = 0;i < 0x14; i+= 1) {
+        uint8_t toDespawn = 0;
+        mem_readb_checked(DS_OFF + DS_entitiesToDespawn + i, &toDespawn);
+        if (toDespawn == ship_id) {
+            mem_writeb_checked(DS_OFF + DS_entitiesToDespawn + i, 0xff);
+        }
+    }
+    if (ship_id < 0xa) {
+        uint16_t entityType =0;
+        mem_readw_checked(DS_OFF + DS_entity_types + ship_id * 2, &entityType);
+        if (entityType == 0xd) { // trigger capital ship explosion animation
+            uint32_t animOffset = 0;
+            mem_readd_checked(DS_OFF + 4 * (uint32_t)ship_id + 0xc754, &animOffset);
+            seg002_0024(0, animOffset);
+        }
+        set_dseg_w(DS_commAnimInfo, ship_id, 2);
+        mem_writeb_checked(DS_OFF + 0xd1a2 + ship_id, 0xff);
+//ovr140:1CA0                 mov     byte ptr vduStatus10WhenPlayerHitsSmth[di], 0FFh
+        set_dseg_w(DS_vduStatus10, ship_id, 0xff);
+        set_dseg_w(0xc69e, ship_id, 0xffff); // mov     word_1E9AE[bx], 0FFFFh
+        stub164_0147(ship_id);
+        set_dseg_w(0xbfe0, ship_id, 0xffff);
+    }
+    set_dseg_w(DS_entity_types, ship_id, 0x0);
+    mem_writed_checked(DS_OFF + 0xc754 + ship_id * 4, 0x0);
+}
+
 void apply_spawn(const Spawn &spawn) {
     if (!spawn.has_mission_ship_id() || !spawn.has_situation_id()) {
         fprintf(stderr, "Invalid spawn event!\n");
@@ -2005,8 +2060,14 @@ void populate_mission_end(MissionEnd *mission_end) {
     }
 }
 
+void despawn_all() {
+    for (int i = 0;i < 0xa; i += 1) {
+        despawn_asm(i);
+    }
+}
 void wc_net_check_cpu_hooks() {
     if (reg_eip == 0x251 && isExecutingOverlay(STUB161, 0x20)) {
+        despawn_all();
         pendingState.currentlySpawnedShips.clear();
         if (client) { //ejected or ended mission
             fprintf(stderr, "Client is resetting mappings with simulation %d\n", in_simulation);
