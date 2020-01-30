@@ -616,6 +616,7 @@ RecvStatus recv_msg(SocketHolder &sockHolder, SocketHolder::MessageCategory whic
         while (true) {
             if (isMessageCategoryNonBlocking(whichCategory)) {
                 fd_set set;
+                FD_ZERO(&set);
                 FD_SET(sockHolder.sock, &set);
                 struct timeval tv;
                 tv.tv_sec = 0;
@@ -1438,6 +1439,27 @@ void apply_starting_game_to_client(NetworkMessage &networkMessage) {
     client->frame_number = networkMessage.frame_number();
     fprintf(stderr, "epoch %d fno %ld\n", client->epoch, client->frame_number);
 }
+
+void wcnetSendChatMessage(const std::string &msg) {
+    NetworkMessage networkMessage;
+    Chat *chat_msg = networkMessage.mutable_chat();
+    chat_msg->set_message(msg);
+    if (client) {
+        if (!send_msg(client->clientSocket, networkMessage).ok()) {
+            fprintf(stderr, "failed to send chat %s\n", msg.c_str());
+        }
+    }
+    if (server) {
+        for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
+            if (!c->is_disconnected()) {
+                if (!send_msg(c->clientSocket, networkMessage).ok()) {
+                    fprintf(stderr, "failed to send chat %s\n", msg.c_str());
+                }
+            }
+        }
+    }
+}
+
 void process_network(bool ignoreClientUpdate) {
     /*
   {
@@ -1630,8 +1652,40 @@ void process_network(bool ignoreClientUpdate) {
     }
 }
 
+void handle_incoming_chat(const Chat &chat) {
+    extern std::string incoming_text;
+    incoming_text = chat.message();
+}
+
 void process_async_networking() {
-    
+    NetworkMessage networkMessage;
+    if (client) {
+        // SocketHolder::CHAT is declared as non-blocking in isMessageCategoryNonBlocking.
+        RecvStatus stat = recv_msg<&NetworkMessage::has_chat>(client->clientSocket, SocketHolder::CHAT, networkMessage);
+        if (stat.ok()) {
+            handle_incoming_chat(networkMessage.chat());
+        }
+        // ignore failures, because CHAT is nonblocking.
+    }
+    if (server) {
+        for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
+            if (c->is_disconnected()) {
+                continue;
+            }
+            RecvStatus stat = recv_msg<&NetworkMessage::has_chat>(c->clientSocket, SocketHolder::CHAT, networkMessage);
+            if (stat.ok()) {
+                handle_incoming_chat(networkMessage.chat());
+                for (ServerState::ClientVec::iterator c2 = server->clients.begin(), ce2=server->clients.end(); c2 != ce2; ++c2) {
+                    if (c2->is_disconnected()) {
+                        continue;
+                    }
+                    if (c2 != c) {
+                        send_msg(c2->clientSocket, networkMessage);
+                    }
+                }
+            }
+        }
+    }
 }
 
 template <class EventBuilder>
@@ -2133,7 +2187,14 @@ void despawn_all() {
         despawn_asm(i);
     }
 }
+
+int chat_polling_interval = 0;
+
 void wc_net_check_cpu_hooks() {
+    if (++chat_polling_interval == 1000) {
+        chat_polling_interval = 0;
+        process_async_networking();
+    }
     if (reg_eip == 0x251 && isExecutingOverlay(STUB161, 0x20)) {
         despawn_all();
         pendingState.currentlySpawnedShips.clear();

@@ -1553,7 +1553,7 @@ bool GFX_StartUpdate(Bit8u * & pixels,Bitu & pitch) {
     return ret;
 }
 std::string outgoing_prefix = "[Transmit Comms] ";
-std::string incoming_text="INCOMING TEXT FROM SONEONE";
+std::string incoming_text="";
 std::string outgoing_text="";//OUTGOING TEXT THAT GOES ON AND ON AND ON AND ON AND ON AND ON AND ON AND ON AND ON";
 extern Bit8u int10_font_14[256 * 14];
 static void DrawText(Bitu x,Bitu y,const char * text,Bit8u color, Bit8u *surface, Bitu pitch) {
@@ -2524,7 +2524,9 @@ void GFX_Events() {
 #if SDL_VERSION_ATLEAST(2,0,0)
                 SDL_StopTextInput();
 #endif
-                outgoing_text = outgoing_text.substr(outgoing_prefix.length());
+                outgoing_text = "";
+                extern void wcnetSendChatMessage(const std::string &msg);
+                wcnetSendChatMessage(outgoing_text.substr(outgoing_prefix.length()));
             }
 #if SDL_VERSION_ATLEAST(2,0,0)
             if (event.type == SDL_TEXTINPUT)
