@@ -53,9 +53,6 @@ message Despawn {
 message ShipUpdate {
         optional uint32 ship_id = 1; // 16 bits
         optional Location loc = 2;
-
-        optional string comm_message = 254;
-        optional string callsign_update = 255;
 }
 
 enum GameState {
@@ -81,7 +78,6 @@ message AutoPilotEvent {
 }
 
 message Event {
-  optional string chat = 1;
   optional Spawn spawn = 2;
   optional Damage damage = 3;
   optional WeaponFire fire = 4;
@@ -115,6 +111,10 @@ message Game {
 message ClientStartMissionReq {
 
 }
+message Chat {
+    optional string message = 1;
+}
+
 message NetworkMessage {
     optional Connect connect = 1;
     optional Game game = 2;
@@ -122,4 +122,5 @@ message NetworkMessage {
     optional ClientStartMissionReq start_mission_req = 4;
     optional uint32 epoch = 5;
     optional uint64 frame_number = 6;
+    optional Chat chat = 7;
 }
