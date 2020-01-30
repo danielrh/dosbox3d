@@ -9,20 +9,34 @@ void process_fire();
 
 void go_to_trampoline();
 
-struct RecvStatus {
-    bool _ok;
+class RecvStatus {
+    enum StatusType {
+        STATUS_FAIL,
+        STATUS_OK,
+        STATUS_NO_DATA
+    };
+    StatusType _status;
+public:
     static RecvStatus OK() {
         RecvStatus ret;
-        ret._ok = true;
+        ret._status = STATUS_OK;
         return ret;
     }
     static RecvStatus FAIL() {
         RecvStatus ret;
-        ret._ok = false;
+        ret._status = STATUS_FAIL;
+        return ret;
+    }
+    static RecvStatus FAIL_NO_DATA() {
+        RecvStatus ret;
+        ret._status = STATUS_NO_DATA;
         return ret;
     }
     bool ok() const {
-        return _ok;
+        return _status == STATUS_OK;
+    }
+    bool no_data() const {
+        return _status == STATUS_NO_DATA;
     }
 };
 class NetworkShipId {

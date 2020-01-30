@@ -131,23 +131,52 @@ public:
     }
 };
 
+struct SocketHolder {
+    int sock;
+    enum MessageCategory {
+        GAME_FRAME,
+        CHAT,
+        NUM_CATEGORIES
+    } messageType;
+    std::deque<NetworkMessage> messageQueues[NUM_CATEGORIES];
+
+    SocketHolder() : sock(-1) {}
+
+    void disconnect() {
+        for (int i = 0; i < NUM_CATEGORIES; i++) {
+            messageQueues[i].clear();
+        }
+        // close it??
+        if (sock != -1) {
+            really_close(sock);
+        }
+        sock = -1;
+    }
+
+    bool is_disconnected() const {
+        return sock == -1;
+    }
+
+    void set_socket(int newSock) {
+        assert (sock == -1);
+        sock = newSock;
+    }
+};
+
 struct RemoteClient {
     NetworkShipId id;
-    int clientSocket;
+    SocketHolder clientSocket;
     std::string callsign;
     std::string remote_mission_tree_progress;
     RemoteClient(NetworkShipId id)
-      : clientSocket(-1),
+      : clientSocket(),
         id(id) {
     }
     bool is_disconnected() const {
-        return clientSocket == -1;
+        return clientSocket.is_disconnected();
     }
     void disconnect() {
-        if (clientSocket != -1) {
-            really_close(clientSocket);
-        }
-        clientSocket = -1;
+        clientSocket.disconnect();
     }
 };
 struct ServerState {
@@ -201,7 +230,7 @@ struct ServerState {
 
 
 struct ClientState {
-    int clientSocket;
+    SocketHolder clientSocket;
     NetworkShipId shipId;
     std::string callsign;
     std::vector<int> netToLocalMapping;
@@ -213,7 +242,7 @@ struct ClientState {
     uint32_t epoch;
     uint64_t frame_number;
     ClientState()
-      : clientSocket(-1),
+      : clientSocket(),
        shipId(NetworkShipId::from_net(0)),
        last_received_victory_points_plus_one(0),
        is_fresh(true),
@@ -231,9 +260,7 @@ struct ClientState {
         }
     }
     ~ClientState() {
-        if (clientSocket != -1) {
-            really_close(clientSocket);
-        }
+        clientSocket.disconnect();
     }
     void reset_mappings() {
         netToLocalMapping.clear();
@@ -533,7 +560,7 @@ bool init_network() {
         server->listenSocket = s;
     }
     if (client) {
-        client->clientSocket = s;
+        client->clientSocket.set_socket(s);
     }
     print_banner();
     return true;
@@ -555,11 +582,20 @@ const char * message_type(const NetworkMessage &msg) {
     type = type ? type : "none";
     return type;
 }
+
+SocketHolder::MessageCategory getMessageCategory(const NetworkMessage &msg) {
+    if (msg.has_chat()) {
+        return SocketHolder::CHAT;
+    }
+    return SocketHolder::GAME_FRAME;
+}
+
+bool isMessageCategoryNonBlocking(SocketHolder::MessageCategory category) {
+    return category == SocketHolder::CHAT;
+}
+
 template<bool (NetworkMessage::*Checker)() const>
-RecvStatus recv_msg(int sock, NetworkMessage &msg) {
-    NetworkMessage networkMessage;
-    unsigned char lengthData[3];
-    ssize_t ret;
+RecvStatus recv_msg(SocketHolder &sockHolder, SocketHolder::MessageCategory whichCategory, NetworkMessage &msg) {
     const char * func_type = 
 #if defined(__GNUC__)
                 __PRETTY_FUNCTION__
@@ -573,36 +609,64 @@ RecvStatus recv_msg(int sock, NetworkMessage &msg) {
     fprintf(stderr, "Begin Receive %s\n",
                 func_type);
 #endif
-    if ((ret = send_or_recv_all(RecvFunctor(sock), lengthData, sizeof(lengthData))) < sizeof(lengthData)) {
-        // We need to handle disconnects here.
-        if (ret < 0) {
-            perror("recv length failed");
-        } else {
-            fprintf(stderr, "recv length socket closed %d\n", (int)ret);
+    if (!sockHolder.messageQueues[(int)whichCategory].empty()) {
+        msg = sockHolder.messageQueues[(int)whichCategory].front();
+        sockHolder.messageQueues[(int)whichCategory].pop_front();
+    } else {
+        while (true) {
+            if (isMessageCategoryNonBlocking(whichCategory)) {
+                fd_set set;
+                FD_SET(sockHolder.sock, &set);
+                struct timeval tv;
+                tv.tv_sec = 0;
+                tv.tv_usec = 0;
+                if (select(sockHolder.sock + 1, &set, NULL, &set, &tv) <= 0) {
+                    return RecvStatus::FAIL_NO_DATA();
+                }
+            }
+            unsigned char lengthData[3];
+            ssize_t ret;
+            if ((ret = send_or_recv_all(RecvFunctor(sockHolder.sock), lengthData, sizeof(lengthData))) < sizeof(lengthData)) {
+                // We need to handle disconnects here.
+                if (ret < 0) {
+                    perror("recv length failed");
+                } else {
+                    fprintf(stderr, "recv length socket closed %d\n", (int)ret);
+                }
+                return RecvStatus::FAIL();
+            }
+            size_t dataLength = ((size_t)lengthData[0] << 16) |
+                ((size_t)lengthData[1] << 8) |
+                ((size_t)lengthData[2]);
+            if (dataLength == 0) {
+                fprintf(stderr, "empty message received!\n");
+                return RecvStatus::FAIL();
+            }
+            std::vector<unsigned char> recvData(dataLength);
+            if ((ret = send_or_recv_all(RecvFunctor(sockHolder.sock), recvData.data(), recvData.size())) < recvData.size()) {
+                // We need to handle disconnects here.
+                if (ret < 0) {
+                    perror("recv data failed");
+                } else {
+                    fprintf(stderr, "recv data socket closed %d\n", (int)ret);
+                }
+                return RecvStatus::FAIL();
+            }
+            bool success = msg.ParseFromArray(recvData.data(), recvData.size());
+            if (!success) {
+                fprintf(stderr, "protobuf parse failed\n");
+                return RecvStatus::FAIL();
+            }
+            SocketHolder::MessageCategory category = getMessageCategory(msg);
+            if (category == whichCategory) {
+                break;
+            } else {
+                sockHolder.messageQueues[(int)category].push_back(msg);
+                if (isMessageCategoryNonBlocking(whichCategory)) {
+                    return RecvStatus::FAIL_NO_DATA();
+                }
+            }
         }
-        return RecvStatus::FAIL();
-    }
-    size_t dataLength = ((size_t)lengthData[0] << 16) |
-        ((size_t)lengthData[1] << 8) |
-        ((size_t)lengthData[2]);
-    if (dataLength == 0) {
-        fprintf(stderr, "empty message received!\n");
-        return RecvStatus::FAIL();
-    }
-    std::vector<unsigned char> recvData(dataLength);
-    if ((ret = send_or_recv_all(RecvFunctor(sock), recvData.data(), recvData.size())) < recvData.size()) {
-        // We need to handle disconnects here.
-        if (ret < 0) {
-            perror("recv data failed");
-        } else {
-            fprintf(stderr, "recv data socket closed %d\n", (int)ret);
-        }
-        return RecvStatus::FAIL();
-    }
-    bool success = msg.ParseFromArray(recvData.data(), recvData.size());
-    if (!success) {
-        fprintf(stderr, "protobuf parse failed\n");
-        return RecvStatus::FAIL();
     }
     if (!(msg.*Checker)()) {
         fprintf(stderr, "type mismatch want %s have %s\n",
@@ -625,7 +689,7 @@ RecvStatus recv_msg(int sock, NetworkMessage &msg) {
     return RecvStatus::OK();
 }
 
-RecvStatus send_msg(int sock, const NetworkMessage &msg) {
+RecvStatus send_msg(SocketHolder sockHolder, const NetworkMessage &msg) {
     if (DEBUG_PROTOBUF) {
         std::string debug = msg.DebugString();
         fprintf(stderr, "SEND %s\n", debug.c_str());
@@ -651,7 +715,7 @@ RecvStatus send_msg(int sock, const NetworkMessage &msg) {
 #ifdef HEAVY_NET_DEBUG
     fprintf(stderr, "start send %s: %d\n", message_type(msg), (int)dataLength);
 #endif
-    if (send_or_recv_all(SendFunctor(sock), toSend.data(), toSend.length()) < 0) {
+    if (send_or_recv_all(SendFunctor(sockHolder.sock), toSend.data(), toSend.length()) < 0) {
         // We need to handle disconnects here.
         perror("send failed");
         return RecvStatus::FAIL();
@@ -1414,7 +1478,7 @@ void process_network(bool ignoreClientUpdate) {
             return;
         }
         while (true) {
-            if (!recv_msg<&NetworkMessage::IsInitialized>(client->clientSocket, networkMessage).ok()) {
+            if (!recv_msg<&NetworkMessage::IsInitialized>(client->clientSocket, SocketHolder::GAME_FRAME, networkMessage).ok()) {
                 uninit_network();
                 client->is_fresh = true;
                 return;
@@ -1434,7 +1498,7 @@ void process_network(bool ignoreClientUpdate) {
             return;
         }
         networkMessage.Clear();
-        if (!recv_msg<&NetworkMessage::has_game>(client->clientSocket, networkMessage).ok()) {
+        if (!recv_msg<&NetworkMessage::has_game>(client->clientSocket, SocketHolder::GAME_FRAME, networkMessage).ok()) {
             uninit_network();
             return;
         }
@@ -1450,7 +1514,7 @@ void process_network(bool ignoreClientUpdate) {
         for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
             if (!c->is_disconnected()) {
 
-                if (!recv_msg<&NetworkMessage::IsInitialized>(c->clientSocket, networkMessage).ok()) {
+                if (!recv_msg<&NetworkMessage::IsInitialized>(c->clientSocket, SocketHolder::GAME_FRAME, networkMessage).ok()) {
                     c->disconnect();
                     continue;
                 }
@@ -1506,18 +1570,18 @@ void process_network(bool ignoreClientUpdate) {
             flags = fcntl(server->listenSocket, F_GETFL, 0);
             fcntl(server->listenSocket, F_SETFL, flags & ~O_NONBLOCK);
             flush_outgoing_frame();
-            if (!recv_msg<&NetworkMessage::has_connect>(s, networkMessage).ok()) {
-                really_close(s);
-                break;
-            }
-            const Connect &connect = networkMessage.connect();
-            fprintf(stderr, "Some guy connected: %s\n", connect.callsign().c_str());
             RemoteClient * cl = server->create_client();
             if (!cl) {
                 really_close(s);
                 break;
             }
-            cl->clientSocket = s;
+            cl->clientSocket.set_socket(s);
+            if (!recv_msg<&NetworkMessage::has_connect>(cl->clientSocket, SocketHolder::GAME_FRAME, networkMessage).ok()) {
+                cl->clientSocket.disconnect();
+                break;
+            }
+            const Connect &connect = networkMessage.connect();
+            fprintf(stderr, "Some guy connected: %s\n", connect.callsign().c_str());
             cl->callsign = connect.callsign();
 
             networkMessage.Clear();
@@ -1535,7 +1599,7 @@ void process_network(bool ignoreClientUpdate) {
             return;
         }
         pendingState.frameMessage.Clear();
-        if (!recv_msg<&NetworkMessage::has_frame>(client->clientSocket, networkMessage).ok()) { // Frame
+        if (!recv_msg<&NetworkMessage::has_frame>(client->clientSocket, SocketHolder::GAME_FRAME, networkMessage).ok()) { // Frame
             uninit_network();
             return;
         }
@@ -1564,6 +1628,10 @@ void process_network(bool ignoreClientUpdate) {
         // After trampoline, we will return to the start of process_network unless true is set here
         gIgnoreNextProcessNetwork = true;
     }
+}
+
+void process_async_networking() {
+    
 }
 
 template <class EventBuilder>
