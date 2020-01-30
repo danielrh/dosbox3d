@@ -2524,9 +2524,14 @@ void GFX_Events() {
 #if SDL_VERSION_ATLEAST(2,0,0)
                 SDL_StopTextInput();
 #endif
-                outgoing_text = "";
                 extern void wcnetSendChatMessage(const std::string &msg);
-                wcnetSendChatMessage(outgoing_text.substr(outgoing_prefix.length()));
+                size_t prompt_len = outgoing_prefix.length();
+                if (prompt_len < outgoing_text.length()) {
+                    wcnetSendChatMessage(outgoing_text.substr(prompt_len));
+                }else {
+                    fprintf(stderr, "Could not send a message %s\n", outgoing_text.c_str());
+                }
+                outgoing_text = "";
             }
 #if SDL_VERSION_ATLEAST(2,0,0)
             if (event.type == SDL_TEXTINPUT)
