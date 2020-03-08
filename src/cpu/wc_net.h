@@ -129,6 +129,7 @@ enum {
     SEG001 = 0x560, // ida:3be
     SEG002 = 0x78c, // ida:5ea
     STUB133 = 0x1266, // ida:10C4
+    STUB134 = 0x126a, // ida:10C8
     STUB140 = 0x12ad, // ida:110B
     STUB141 = 0x12cc, // ida:112A
     STUB142 = 0x12d4, // ida:1132
@@ -167,6 +168,8 @@ enum DataSegValues {
     DS_trampoline = DS_loading_wing_commander + 101, // 6 bytes
     DS_tramp_ret_NOP = DS_trampoline + 3, // NOP instruction we hook into
     //DS_tmpvector = DS_Pos + (12 * 0x3f)
+    DS_comm_global_txt = 0x8DF8, // 80 bytes
+    comm_global_txt_length = 80,
     DS_parent_ship = 0xC30E,
     DS_entity_types = 0xBD1A,
     DS_entity_allocated = 0xACC4,

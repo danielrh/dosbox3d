@@ -113,6 +113,7 @@ message ClientStartMissionReq {
 }
 message Chat {
     optional string message = 1;
+    optional uint32 ship_id = 2;
 }
 
 message NetworkMessage {

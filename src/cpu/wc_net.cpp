@@ -438,21 +438,36 @@ bool is_client_authoritative(NetworkShipId sender, NetworkShipId id) {
     return sender == id;
 }
 
+struct ChatMessage {
+    int net_ship_id;
+    std::string text;
+};
+
 class QueuedEvent {
 public:
+    enum Type {
+        EVENT,
+        CHAT_MESSAGE
+    };
     Event ev;
+    ChatMessage chatMessage;
+    Type type;
     bool shouldSync;
 
     QueuedEvent()
-        : shouldSync(false) {
+        : type(EVENT), shouldSync(false) {
+    }
+
+    QueuedEvent(ChatMessage chatMessage)
+        : chatMessage(chatMessage), type(CHAT_MESSAGE), shouldSync(false) {
     }
 
     QueuedEvent(Event ev)
-        : ev(ev), shouldSync(false) {
+        : ev(ev), type(EVENT), shouldSync(false) {
     }
 
     QueuedEvent(Event ev, bool shouldSync)
-        : ev(ev), shouldSync(shouldSync) {
+        : ev(ev), type(EVENT), shouldSync(shouldSync) {
     }
 };
 
@@ -1257,6 +1272,40 @@ void apply_delayed_despawn(const Despawn &despawn) {
     }
 }
 
+void apply_chat_message(const ChatMessage &chat_message) {
+    NetworkShipId id = NetworkShipId::from_net(chat_message.net_ship_id);
+    uint32_t ship_id = id.to_local();
+    uint32_t message_id = 0; // we will clobber the string anyway.
+    fprintf(stderr, "\r\napply_chat_message(%d->%d): %s\r\n",
+            id.to_net(), id.to_local(), chat_message.text.c_str());
+    {
+        CPU_Push16((Bit16u)SegValue(cs));
+        CPU_Push16((Bit16u)reg_eip);
+        Bit8u shellcode[] = {
+            0x00, // nul terminate string
+            0x56, // push si (original value)
+            0xbe, u8(message_id & 0xff), u8(message_id >> 8), // mov si <- ship_id
+            0x56, // push si
+            0xbe, u8(ship_id & 0xff), u8(ship_id >> 8), // mov si <- ship_id
+            0x56, // push si
+            // call far 126A:025F
+            0x9A, 0x5F, 0x02, u8(STUB134 & 0xff), u8(STUB134 >> 8),
+            // pop si, pop si
+            0x5E, 0x5E, 0x5E,
+            //0x61, 0x9D, // pop all regs, pop flags
+            0xCB // retf
+        };
+        for (int i = 0; i < sizeof(shellcode); i++) {
+            mem_writeb_checked(DS_OFF + shellcode_start + i, shellcode[i]);
+        }
+        SegSet16(cs, DS);
+        reg_eip = shellcode_start + 1;
+        if (debuglog) {
+              fprintf(debuglog, "cs:eip = %04x:%04x\n", SegValue(cs), reg_eip);
+        }
+    }
+}
+
 void run_briefing(int missionId, int seriesId) {
     {
         CPU_Push16((Bit16u)SegValue(cs));
@@ -1443,6 +1492,7 @@ void apply_starting_game_to_client(NetworkMessage &networkMessage) {
 void wcnetSendChatMessage(const std::string &msg) {
     NetworkMessage networkMessage;
     Chat *chat_msg = networkMessage.mutable_chat();
+    chat_msg->set_ship_id(client ? client->shipId.to_net() : 0);
     chat_msg->set_message(msg);
     if (client) {
         if (!send_msg(client->clientSocket, networkMessage).ok()) {
@@ -1653,8 +1703,13 @@ void process_network(bool ignoreClientUpdate) {
 }
 
 void handle_incoming_chat(const Chat &chat) {
-    extern std::string incoming_text;
-    incoming_text = chat.message();
+    //extern std::string incoming_text;
+    //incoming_text = chat.message();
+    //NetworkShipId::from_net
+    queuedEvents.push_back(ChatMessage());
+    queuedEvents.back().chatMessage.net_ship_id = chat.ship_id();
+    queuedEvents.back().chatMessage.text = chat.message();
+    //go_to_trampoline();
 }
 
 void process_async_networking() {
@@ -1940,6 +1995,13 @@ void process_trampoline() {
     //fprintf(stderr, "Trampoline: start %d\n", (int)queuedEvents.size());
     gIsProcessingTrampoline = true;
     {
+        if (gCurrentEvent.type == QueuedEvent::CHAT_MESSAGE) {
+            std::string msgstr = gCurrentEvent.chatMessage.text.substr(0, comm_global_txt_length - 1);
+            const char *msg = msgstr.c_str();
+            for (unsigned i = 0; i < msgstr.length() + 1; i++) {
+                mem_writeb_checked(DS_OFF + DS_comm_global_txt + i, msg[i]);
+            }
+        }
         Event &ev = gCurrentEvent.ev;
         if (ev.has_fire()) {
             std::pair<Bit16u, Bit16u> idType = get_recently_spawned_type(lastObjectMap);
@@ -2021,7 +2083,11 @@ void process_trampoline() {
         fprintf(stderr, "tramp event %d %s\n", (int)queuedEvents.size(), debug.c_str());
 
         const Event &ev = gCurrentEvent.ev;
-        
+        if (gCurrentEvent.type == QueuedEvent::CHAT_MESSAGE) {
+            fprintf(stderr, "Trampoline: starting fire\n");
+            lastObjectMap = get_object_map();
+            apply_chat_message(gCurrentEvent.chatMessage);
+        }
         if (ev.has_fire()) {
             fprintf(stderr, "Trampoline: starting fire\n");
             lastObjectMap = get_object_map();
@@ -2378,6 +2444,12 @@ void wc_net_check_cpu_hooks() {
         forceBreak = val;
         val = !val;*/
     }
+    //if (isExecutingFunction(STUB134, 0x25f)) {
+    //        if (!forceBreakAlternate) {
+    //            forceBreak = true;
+    //        }
+    //        forceBreakAlternate = !forceBreakAlternate;
+    //}
     if (SegValue(cs) == SEG001 && reg_eip == 0x0512) {
         // somehow we need to convince it we've loaded a mission so we can go back to launch area
         char *misenv = getenv("MIS");
