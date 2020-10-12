@@ -2295,6 +2295,22 @@ void wc_net_check_cpu_hooks() {
         chat_polling_interval = 0;
         process_async_networking();
     }
+    //stub148:005C (j_outerLoadBriefingAnimation)
+    if (reg_eip == 0x07c1 && isExecutingOverlay(STUB148, 0x20)) {
+        Bit16u mission_id = mem_readw(DS_OFF + DS_missionId);
+        Bit16u series_id = mem_readw(DS_OFF + DS_seriesId);
+        fprintf(stderr, "Started briefing in earnest %d %d\n",
+                mission_id, series_id);
+                
+    }
+    if (reg_eip == 0x0470 && isExecutingOverlay(STUB161, 0x20)) {
+        Bit16u mission_id = mem_readw(DS_OFF + DS_missionId);
+        Bit16u series_id = mem_readw(DS_OFF + DS_seriesId);
+        fprintf(stderr, "Starting campaign mission %d %d\n",
+                mission_id, series_id);
+        // mem_writew(DS_OFF + DS_seriesId, series_id + 1); <-- this is the place to adjust mission starters and also impact the briefing ... so FIXME: we should do a client/server sync at
+        // this point
+    }
     if (reg_eip == 0x251 && isExecutingOverlay(STUB161, 0x20)) {
         despawn_all();
         pendingState.currentlySpawnedShips.clear();
