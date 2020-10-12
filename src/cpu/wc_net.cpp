@@ -472,6 +472,7 @@ public:
 };
 
 std::deque<QueuedEvent> queuedEvents;
+std::deque<QueuedEvent> chatEvents;
 QueuedEvent gCurrentEvent;
 bool gSyncCurrentEvent;
 std::vector<Bit16u> lastObjectMap;
@@ -1706,9 +1707,9 @@ void handle_incoming_chat(const Chat &chat) {
     //extern std::string incoming_text;
     //incoming_text = chat.message();
     //NetworkShipId::from_net
-    queuedEvents.push_back(ChatMessage());
-    queuedEvents.back().chatMessage.net_ship_id = chat.ship_id();
-    queuedEvents.back().chatMessage.text = chat.message();
+    chatEvents.push_back(ChatMessage());
+    chatEvents.back().chatMessage.net_ship_id = chat.ship_id();
+    chatEvents.back().chatMessage.text = chat.message();
     //go_to_trampoline();
 }
 
@@ -2076,9 +2077,14 @@ void process_trampoline() {
         }
     }
 
-    while (!queuedEvents.empty()) {
-        gCurrentEvent = queuedEvents.front();
-        queuedEvents.pop_front();
+    while ((!chatEvents.empty())||!queuedEvents.empty()) {
+        if (!chatEvents.empty()) {
+            gCurrentEvent = chatEvents.front();
+            chatEvents.pop_front();
+        }else {
+            gCurrentEvent = queuedEvents.front();
+            queuedEvents.pop_front();
+        } 
         std::string debug = gCurrentEvent.ev.DebugString();
         fprintf(stderr, "tramp event %d %s\n", (int)queuedEvents.size(), debug.c_str());
 
