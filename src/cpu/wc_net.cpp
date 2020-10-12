@@ -1038,6 +1038,31 @@ void apply_autopiloting(const AutoPilotEvent &ape) {
         }
     }    
 }
+
+void print_free_entities() {
+    for (Bit16u i = 0; i <= WCE_MAX_TEMPORARY_ID; i++) {
+        Bit16u typ = mem_readw(DS_OFF + DS_entity_types + i * 2);
+        if (i == WCE_PLAYER_ID) {
+            fprintf(stderr, "Plr type %d\n", typ);
+        } else if (i >= WCE_MIN_PERMANENT_ID && i <= WCE_MAX_PERMANENT_ID) {
+            fprintf(stderr, "NPC type %d\n", typ);
+        } else if (i >= WCE_MIN_TEMPORARY_ID && i <= WCE_MAX_TEMPORARY_ID) {
+            fprintf(stderr, "Tmp type %d\n", typ);
+        } else {
+            fprintf(stderr, "Scr type %d\n", typ);
+        }
+    }
+}
+int num_free_entities() {
+    int zero_count = 0;
+    for (Bit16u i = WCE_MIN_TEMPORARY_ID; i <= WCE_MAX_TEMPORARY_ID; i++) {
+        Bit16u typ = mem_readw(DS_OFF + DS_entity_types + i * 2);
+        if (typ == 0) {
+            zero_count += 1;
+        }
+    }
+    return zero_count;
+}
 void apply_weapon_fire(const WeaponFire &fire) {
     /*if (!should_simulate_damage(ship_id, ship_id)) {
         return;
@@ -1047,7 +1072,10 @@ void apply_weapon_fire(const WeaponFire &fire) {
                 fire.shooter());
         return;
     }
-
+    //print_free_entities();
+    if (num_free_entities() < 5) {
+        return;
+    }
     NetworkShipId id = NetworkShipId::from_net(fire.shooter());
     uint32_t gun_id = 0;
     if (fire.has_gun_id()) {
@@ -2098,7 +2126,7 @@ void process_trampoline() {
             fprintf(stderr, "Trampoline: starting fire\n");
             lastObjectMap = get_object_map();
             apply_weapon_fire(ev.fire());
-        }
+          }
         if (ev.has_damage()) {
             fprintf(stderr, "Trampoline: starting damage\n");
             /*Cheat mode:*/if (enable_all_damage || (enable_damage && ev.damage().ship_id() != 0 && ev.damage().ship_id() != 1)) {
