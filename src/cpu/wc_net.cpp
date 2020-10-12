@@ -2207,7 +2207,7 @@ bool skipBarracks = false;
 const size_t mission_tree_start = 0xd25d; // this is where the navPointState struct starts at 53853
 const size_t mission_tree_size = 8 * 19;
 
-void  load_mission_tree_progress(const std::string mission_tree_data){
+void  load_mission_tree_progress(const std::string &mission_tree_data){
     if (mission_tree_data.length() != mission_tree_size) {
         fprintf(stderr, "Uncommon mission tree data length %ld != %ld\n",
                 mission_tree_data.length(), mission_tree_size);
@@ -2219,8 +2219,8 @@ void  load_mission_tree_progress(const std::string mission_tree_data){
         return;
     }
     for (size_t i = 0;i < mission_tree_size; i+=1) {//sizeof(Bit32u)) {
-        Bit8u val;
-        memcpy(&val, &mission_tree_data.front() + i,sizeof(val));
+        Bit8u val = mission_tree_data[i];
+        memcpy(&val, &val,sizeof(val));
         mem_writeb(DS_OFF + i + mission_tree_start, val);
     }
     
@@ -2240,11 +2240,11 @@ void populate_mission_end(MissionEnd *mission_end) {
         return;
     }
     std::string *mission_tree = mission_end->mutable_mission_tree_progress();
-    mission_tree->resize(mission_tree_size);
+    mission_tree->resize(0);
     Bit8u val = 0;
     for (size_t i = 0;i < mission_tree_size; i+=1) {//sizeof(Bit32u)) {
         val = mem_readb(DS_OFF + i + mission_tree_start);
-        memcpy(&mission_tree->front() + i, &val, sizeof(val));
+        mission_tree->push_back(val);
     }
 }
 
