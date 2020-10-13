@@ -1,3 +1,4 @@
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,6 +30,8 @@ bool DEBUG_PROTOBUF =
 // only in heavy debug;
 extern bool forceBreak;
 int in_simulation = 0;
+int within_briefed_mission = 0;
+void  load_mission_tree_progress(const std::string &mission_tree_data);
 Bit8u u8(Bit32u data) {
     assert(data <256);
     return (Bit8u)data;
@@ -168,9 +171,13 @@ struct RemoteClient {
     SocketHolder clientSocket;
     std::string callsign;
     std::string remote_mission_tree_progress;
+    bool requested_briefing_start;
+    bool needs_mission_space_start_state;
     RemoteClient(NetworkShipId id)
       : clientSocket(),
-        id(id) {
+       id(id),
+       requested_briefing_start(false),
+       needs_mission_space_start_state(false){
     }
     bool is_disconnected() const {
         return clientSocket.is_disconnected();
@@ -186,6 +193,7 @@ struct ServerState {
     std::vector<NetworkShipId> allowedShipIds;
     uint32_t epoch;
     uint64_t frame_number;
+    ServerSendBriefingStart last_recorded_briefing;
     ServerState() {
         listenSocket = -1;
         allowedShipIds.push_back(NetworkShipId::from_net(1));
@@ -1507,6 +1515,21 @@ bool send_start_state(NetworkMessage &networkMessage,RemoteClient *cl) {
     }
     return true;
 }
+bool send_briefing_state(RemoteClient *cl) {
+    NetworkMessage networkMessage;
+    *networkMessage.mutable_briefing_start() = server->last_recorded_briefing;
+    networkMessage.set_epoch(server->epoch);
+    networkMessage.set_frame_number(server->frame_number);
+    std::string debug = networkMessage.DebugString();
+    fprintf(stderr, "Sending briefing state to client %d: %s\n",
+            cl->id.to_net(), debug.c_str());
+    if (!send_msg(cl->clientSocket, networkMessage).ok()) {
+        cl->disconnect();
+        return false;
+    }
+    cl->requested_briefing_start = false;
+   return true;
+}
 void apply_starting_game_to_client(NetworkMessage &networkMessage) {
     const Game &game = networkMessage.game();
     if (game.has_starting_state()) {
@@ -1539,6 +1562,91 @@ void wcnetSendChatMessage(const std::string &msg) {
     }
 }
 
+void client_process_pre_briefing() {
+    if (!client && !server) {
+        init_network();
+    }
+    if (client) {
+        NetworkMessage networkMessage;
+        ClientStartBriefingReq *restart_req = networkMessage.mutable_start_briefing_req();
+        fprintf(stderr, "Starting requesting which briefing to load\n");
+        if (!send_msg(client->clientSocket, networkMessage).ok()) {
+            fprintf(stderr, "Failed to connect\n");
+            client->is_fresh = true;
+            uninit_network();
+            return;
+        }
+        while (true) {
+            if (!recv_msg<&NetworkMessage::IsInitialized>(client->clientSocket, SocketHolder::GAME_FRAME, networkMessage).ok()) {
+                client->is_fresh = true;
+                uninit_network();
+                return;
+            }
+            fprintf(stderr, "Trying to receive briefing start message\n");
+            if (networkMessage.has_briefing_start()) {
+                client->epoch = networkMessage.epoch();
+                client->frame_number = networkMessage.frame_number();
+                load_mission_tree_progress(networkMessage.briefing_start().mission_tree_progress());
+                mem_writeb(DS_OFF + DS_missionId, networkMessage.briefing_start().mission_id());
+                mem_writeb(DS_OFF + DS_seriesId, networkMessage.briefing_start().series_id());
+                fprintf(stderr, "Got it! ready to go at %d : %d\n", networkMessage.briefing_start().series_id(), networkMessage.briefing_start().mission_id());
+                return;
+            }
+        }
+
+    }
+            
+
+}
+void wait_for_at_least_1_client() {
+    while (true) { // TODO: functionalize: check for newly connecting clients
+        int flags = fcntl(server->listenSocket, F_GETFL, 0);
+        if (server->clients.empty()) {
+            fcntl(server->listenSocket, F_SETFL, flags & ~O_NONBLOCK);
+        } else {
+            fcntl(server->listenSocket, F_SETFL, flags | O_NONBLOCK);
+        }
+        sockaddr addr;
+        socklen_t addrlen = sizeof(addr);
+        int s = accept(server->listenSocket, &addr, &addrlen);
+        if (s < 0) {
+            if (errno != EWOULDBLOCK && errno != EAGAIN) {
+                perror("accept failed");
+            }
+            break;
+        }
+        flags = fcntl(server->listenSocket, F_GETFL, 0);
+        fcntl(server->listenSocket, F_SETFL, flags & ~O_NONBLOCK);
+        flush_outgoing_frame();
+        RemoteClient * cl = server->create_client();
+        if (!cl) {
+            really_close(s);
+            break;
+        }
+        cl->clientSocket.set_socket(s);
+        NetworkMessage networkMessage;
+        if (!recv_msg<&NetworkMessage::has_connect>(cl->clientSocket, SocketHolder::GAME_FRAME, networkMessage).ok()) {
+            cl->clientSocket.disconnect();
+            break;
+        }
+        const Connect &connect = networkMessage.connect();
+        fprintf(stderr, "Some guy connected: %s\n", connect.callsign().c_str());
+        cl->callsign = connect.callsign();
+        
+        networkMessage.Clear();
+        if (networkMessage.has_start_briefing_req()) {
+            if (within_briefed_mission) {
+                fprintf(stderr, "Within briefed mission--sending saved up starter state\n");
+                send_briefing_state(cl);
+            } else {
+                fprintf(stderr, "Request start neext time with briefing info\n");
+                //next time the server starts a mission it will be sent
+                cl->requested_briefing_start = true;
+            }
+        }
+        cl->needs_mission_space_start_state = true;
+    }
+}
 void process_network(bool ignoreClientUpdate) {
     /*
   {
@@ -1574,14 +1682,14 @@ void process_network(bool ignoreClientUpdate) {
         networkMessage.Clear();
         ClientStartMissionReq *restart_req = networkMessage.mutable_start_mission_req();
         if (!send_msg(client->clientSocket, networkMessage).ok()) {
-            uninit_network();
             client->is_fresh = true;
+            uninit_network();
             return;
         }
         while (true) {
             if (!recv_msg<&NetworkMessage::IsInitialized>(client->clientSocket, SocketHolder::GAME_FRAME, networkMessage).ok()) {
-                uninit_network();
                 client->is_fresh = true;
+                uninit_network();
                 return;
             }
             if (networkMessage.has_game()) {
@@ -1614,10 +1722,26 @@ void process_network(bool ignoreClientUpdate) {
         populate_server_frame(&pendingState.frame());
         for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
             if (!c->is_disconnected()) {
-
+                if (c->needs_mission_space_start_state) {
+                    if (!send_start_state(networkMessage, &*c)) {
+                        c->disconnect();
+                        continue;
+                    }
+                    c->needs_mission_space_start_state = false; // deferred mission start until mission actually starts
+                }
                 if (!recv_msg<&NetworkMessage::IsInitialized>(c->clientSocket, SocketHolder::GAME_FRAME, networkMessage).ok()) {
                     c->disconnect();
                     continue;
+                }
+                if (networkMessage.has_start_briefing_req()) {
+                    if (within_briefed_mission) {
+                        fprintf(stderr, "Within briefed mission--sending saved up starter state\n");
+                        send_briefing_state(&*c);
+                    } else {
+                        fprintf(stderr, "Request start neext time with briefing info\n");
+                        //next time the server starts a mission it will be sent
+                        c->requested_briefing_start = true;
+                    }
                 }
                 if (networkMessage.has_start_mission_req()) {
                     fprintf(stderr, "Sending start-mission state to requestor\n");
@@ -1652,44 +1776,7 @@ void process_network(bool ignoreClientUpdate) {
                 break;
             }
         }
-        while (true) { // TODO: functionalize: check for newly connecting clients
-            int flags = fcntl(server->listenSocket, F_GETFL, 0);
-            if (server->clients.empty()) {
-                fcntl(server->listenSocket, F_SETFL, flags & ~O_NONBLOCK);
-            } else {
-                fcntl(server->listenSocket, F_SETFL, flags | O_NONBLOCK);
-            }
-            sockaddr addr;
-            socklen_t addrlen = sizeof(addr);
-            int s = accept(server->listenSocket, &addr, &addrlen);
-            if (s < 0) {
-                if (errno != EWOULDBLOCK && errno != EAGAIN) {
-                    perror("accept failed");
-                }
-                break;
-            }
-            flags = fcntl(server->listenSocket, F_GETFL, 0);
-            fcntl(server->listenSocket, F_SETFL, flags & ~O_NONBLOCK);
-            flush_outgoing_frame();
-            RemoteClient * cl = server->create_client();
-            if (!cl) {
-                really_close(s);
-                break;
-            }
-            cl->clientSocket.set_socket(s);
-            if (!recv_msg<&NetworkMessage::has_connect>(cl->clientSocket, SocketHolder::GAME_FRAME, networkMessage).ok()) {
-                cl->clientSocket.disconnect();
-                break;
-            }
-            const Connect &connect = networkMessage.connect();
-            fprintf(stderr, "Some guy connected: %s\n", connect.callsign().c_str());
-            cl->callsign = connect.callsign();
-
-            networkMessage.Clear();
-            if (!send_start_state(networkMessage, cl)) {
-                break;
-            }
-        }
+        wait_for_at_least_1_client();
     } else if (client) {
         networkMessage.Clear();
         pendingState.frameMessage.set_epoch(client->epoch);
@@ -2304,12 +2391,36 @@ void wc_net_check_cpu_hooks() {
                 
     }
     if (reg_eip == 0x0470 && isExecutingOverlay(STUB161, 0x20)) {
-        Bit16u mission_id = mem_readw(DS_OFF + DS_missionId);
-        Bit16u series_id = mem_readw(DS_OFF + DS_seriesId);
+        Bit8u mission_id = mem_readb(DS_OFF + DS_missionId);
+        Bit8u series_id = mem_readb(DS_OFF + DS_seriesId);
+        within_briefed_mission = 1;
         fprintf(stderr, "Starting campaign mission %d %d\n",
                 mission_id, series_id);
         // mem_writew(DS_OFF + DS_seriesId, series_id + 1); <-- this is the place to adjust mission starters and also impact the briefing ... so FIXME: we should do a client/server sync at
         // this point
+        if (!client && !server) {
+            init_network();
+        }
+        if (client) {
+            client_process_pre_briefing();
+        }
+        if (server) {
+            MissionEnd mission_end;
+            populate_mission_end(&mission_end);
+            server->last_recorded_briefing.set_mission_tree_progress(mission_end.mission_tree_progress());
+            server->last_recorded_briefing.set_mission_id(mission_id);
+            server->last_recorded_briefing.set_series_id(series_id);
+            wait_for_at_least_1_client();
+            fprintf(stderr, "Going to send briefing to %d clients\n", (int)server->clients.size());
+            for (std::vector<RemoteClient>::iterator i = server->clients.begin(), ie = server->clients.end(); i != ie ;++i) {
+                if (i->requested_briefing_start) {
+                    fprintf(stderr, "Actually sending briefing to a client\n");
+                    send_briefing_state(&*i);
+                }else {
+                    fprintf(stderr, "Client hasn't asked yet--waaiting\n");
+                }
+            }
+        }
     }
     if (reg_eip == 0x251 && isExecutingOverlay(STUB161, 0x20)) {
         despawn_all();
@@ -2423,6 +2534,7 @@ void wc_net_check_cpu_hooks() {
         }
     }
     if (reg_eip == 0x4dd && isExecutingOverlay(STUB161, 0x20)) { // mission ended for some reason, at correct callsite
+        within_briefed_mission = 0;
         if (client) {
             if (client->mission_tree_progress.length()) {
                 load_mission_tree_progress(client->mission_tree_progress);

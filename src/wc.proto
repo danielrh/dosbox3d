@@ -111,11 +111,18 @@ message Game {
 message ClientStartMissionReq {
 
 }
+message ClientStartBriefingReq {
+
+}
 message Chat {
     optional string message = 1;
     optional uint32 ship_id = 2;
 }
-
+message ServerSendBriefingStart {
+    optional uint32 mission_id = 1;
+    optional bytes mission_tree_progress = 2;
+    optional uint32 series_id = 3;
+}
 message NetworkMessage {
     optional Connect connect = 1;
     optional Game game = 2;
@@ -124,4 +131,8 @@ message NetworkMessage {
     optional uint32 epoch = 5;
     optional uint64 frame_number = 6;
     optional Chat chat = 7;
+
+// handshake
+    optional ClientStartBriefingReq start_briefing_req = 16;
+    optional ServerSendBriefingStart briefing_start = 17;
 }
