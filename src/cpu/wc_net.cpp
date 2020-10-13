@@ -619,6 +619,38 @@ bool isMessageCategoryNonBlocking(SocketHolder::MessageCategory category) {
 }
 
 template<bool (NetworkMessage::*Checker)() const>
+RecvStatus peek_recv_msg(SocketHolder &sockHolder, SocketHolder::MessageCategory whichCategory) {
+    if (sockHolder.messageQueues[(int)whichCategory].empty()) {
+        return RecvStatus::FAIL_NO_DATA();
+    }
+    NetworkMessage &msg = sockHolder.messageQueues[(int)whichCategory].front();
+    if (!(msg.*Checker)()) {
+        return RecvStatus::FAIL_NO_DATA();
+    }
+    return RecvStatus::OK();
+}
+
+template<bool (Checker)(NetworkMessage*)>
+RecvStatus peek_recv_msg_a(SocketHolder &sockHolder, SocketHolder::MessageCategory whichCategory) {
+    if (sockHolder.messageQueues[(int)whichCategory].empty()) {
+        return RecvStatus::FAIL_NO_DATA();
+    }
+    NetworkMessage &msg = sockHolder.messageQueues[(int)whichCategory].front();
+    if (!(*Checker)(&msg)) {
+        return RecvStatus::FAIL_NO_DATA();
+    }
+    return RecvStatus::OK();
+}
+bool prior_epoch(NetworkMessage *n) {
+    if (!server) {
+        return false;
+    }
+    if (n->has_frame() && n->epoch() != server->epoch) {
+        return true;
+    }
+    return false;
+}
+template<bool (NetworkMessage::*Checker)() const>
 RecvStatus recv_msg(SocketHolder &sockHolder, SocketHolder::MessageCategory whichCategory, NetworkMessage &msg) {
     const char * func_type = 
 #if defined(__GNUC__)
@@ -1637,7 +1669,9 @@ void wait_for_at_least_1_client() {
         if (networkMessage.has_start_briefing_req()) {
             if (within_briefed_mission) {
                 fprintf(stderr, "Within briefed mission--sending saved up starter state\n");
-                send_briefing_state(cl);
+                if (!send_briefing_state(cl)) {
+                    cl->disconnect();
+                }
             } else {
                 fprintf(stderr, "Request start neext time with briefing info\n");
                 //next time the server starts a mission it will be sent
@@ -1736,7 +1770,9 @@ void process_network(bool ignoreClientUpdate) {
                 if (networkMessage.has_start_briefing_req()) {
                     if (within_briefed_mission) {
                         fprintf(stderr, "Within briefed mission--sending saved up starter state\n");
-                        send_briefing_state(&*c);
+                        if (!send_briefing_state(&*c)) {
+                            c->disconnect();
+                        }
                     } else {
                         fprintf(stderr, "Request start neext time with briefing info\n");
                         //next time the server starts a mission it will be sent
@@ -1852,6 +1888,28 @@ void process_async_networking() {
                     }
                     if (c2 != c) {
                         send_msg(c2->clientSocket, networkMessage);
+                    }
+                }
+            }
+            if (peek_recv_msg_a<prior_epoch>(c->clientSocket, SocketHolder::GAME_FRAME).ok()) {
+                if (!in_simulation) {
+                    recv_msg<&NetworkMessage::has_frame>(c->clientSocket, SocketHolder::GAME_FRAME, networkMessage);
+                    fprintf(stderr, "Discarding stray simulation from epoch %d not %d\n", networkMessage.epoch(), server->epoch);
+                }
+            }
+            if (peek_recv_msg<&NetworkMessage::has_start_briefing_req>(c->clientSocket, SocketHolder::GAME_FRAME).ok()) {
+                // this is nonblocking
+                RecvStatus stat = recv_msg<&NetworkMessage::has_start_briefing_req>(c->clientSocket, SocketHolder::GAME_FRAME, networkMessage);
+                if (stat.ok()) {
+                    if (within_briefed_mission) {
+                        fprintf(stderr, "Within briefed mission--sending saved up starter state\n");
+                        if (!send_briefing_state(&*c)) {
+                            c->disconnect();
+                        }
+                    } else {
+                        fprintf(stderr, "Request start next time with briefing info\n");
+                        //next time the server starts a mission it will be sent
+                        c->requested_briefing_start = true;
                     }
                 }
             }
@@ -2383,6 +2441,10 @@ void wc_net_check_cpu_hooks() {
         process_async_networking();
     }
     //stub148:005C (j_outerLoadBriefingAnimation)
+    /*
+    if (isExecutingOverlay(STUB148, 0x20)) {
+        fprintf(stderr, "Stub148: %x\n", reg_eip);
+        }*/
     if (reg_eip == 0x07c1 && isExecutingOverlay(STUB148, 0x20)) {
         Bit16u mission_id = mem_readw(DS_OFF + DS_missionId);
         Bit16u series_id = mem_readw(DS_OFF + DS_seriesId);
@@ -2415,7 +2477,9 @@ void wc_net_check_cpu_hooks() {
             for (std::vector<RemoteClient>::iterator i = server->clients.begin(), ie = server->clients.end(); i != ie ;++i) {
                 if (i->requested_briefing_start) {
                     fprintf(stderr, "Actually sending briefing to a client\n");
-                    send_briefing_state(&*i);
+                    if (!send_briefing_state(&*i)) {
+                        i->disconnect();
+                    }
                 }else {
                     fprintf(stderr, "Client hasn't asked yet--waaiting\n");
                 }
