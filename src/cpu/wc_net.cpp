@@ -1578,6 +1578,7 @@ void wcnetSendChatMessage(const std::string &msg) {
     Chat *chat_msg = networkMessage.mutable_chat();
     chat_msg->set_ship_id(client ? client->shipId.to_net() : 0);
     chat_msg->set_message(msg);
+    fprintf(stderr, "Sending chat message %s\n", msg.c_str());
     if (client) {
         if (!send_msg(client->clientSocket, networkMessage).ok()) {
             fprintf(stderr, "failed to send chat %s\n", msg.c_str());
@@ -1853,10 +1854,12 @@ void process_network(bool ignoreClientUpdate) {
         gIgnoreNextProcessNetwork = true;
     }
 }
-
+extern std:: string incoming_text;
 void handle_incoming_chat(const Chat &chat) {
     //extern std::string incoming_text;
-    //incoming_text = chat.message();
+    if (!in_simulation) {
+        incoming_text = chat.message();
+    }
     //NetworkShipId::from_net
     chatEvents.push_back(ChatMessage());
     chatEvents.back().chatMessage.net_ship_id = chat.ship_id();
@@ -1870,6 +1873,7 @@ void process_async_networking() {
         // SocketHolder::CHAT is declared as non-blocking in isMessageCategoryNonBlocking.
         RecvStatus stat = recv_msg<&NetworkMessage::has_chat>(client->clientSocket, SocketHolder::CHAT, networkMessage);
         if (stat.ok()) {
+            fprintf(stderr, "Incoming async chat message %s\n", networkMessage.chat().message().c_str());
             handle_incoming_chat(networkMessage.chat());
         }
         // ignore failures, because CHAT is nonblocking.
@@ -2170,6 +2174,7 @@ void process_trampoline() {
     gIsProcessingTrampoline = true;
     {
         if (gCurrentEvent.type == QueuedEvent::CHAT_MESSAGE) {
+            fprintf(stderr, "Writing chat message %s\n", gCurrentEvent.chatMessage.text.c_str());
             std::string msgstr = gCurrentEvent.chatMessage.text.substr(0, comm_global_txt_length - 1);
             const char *msg = msgstr.c_str();
             for (unsigned i = 0; i < msgstr.length() + 1; i++) {
@@ -2252,6 +2257,7 @@ void process_trampoline() {
 
     while ((!chatEvents.empty())||!queuedEvents.empty()) {
         if (!chatEvents.empty()) {
+            fprintf(stderr, "Popping chat message %s\n", chatEvents.front().chatMessage.text.c_str());
             gCurrentEvent = chatEvents.front();
             chatEvents.pop_front();
         }else {
@@ -2265,6 +2271,7 @@ void process_trampoline() {
         if (gCurrentEvent.type == QueuedEvent::CHAT_MESSAGE) {
             fprintf(stderr, "Trampoline: starting fire\n");
             lastObjectMap = get_object_map();
+            fprintf(stderr, "Applying chat message %s\n", gCurrentEvent.chatMessage.text.c_str());
             apply_chat_message(gCurrentEvent.chatMessage);
         }
         if (ev.has_fire()) {
