@@ -26,6 +26,7 @@ bool DEBUG_PROTOBUF =
     false
 #endif
     ;
+bool removeme = true;
 
 // only in heavy debug;
 extern bool forceBreak;
@@ -247,6 +248,7 @@ struct ClientState {
     std::string mission_tree_progress;
     bool is_fresh;
     bool has_restarted_mission;
+    bool has_sent_connect;
     uint32_t epoch;
     uint64_t frame_number;
     ClientState()
@@ -255,6 +257,7 @@ struct ClientState {
        last_received_victory_points_plus_one(0),
        is_fresh(true),
        has_restarted_mission(false),
+       has_sent_connect(false),
        epoch(0),  // so it won't match server epoch of 1
        frame_number(0)
     {
@@ -1560,6 +1563,7 @@ bool send_briefing_state(RemoteClient *cl) {
         return false;
     }
     cl->requested_briefing_start = false;
+     cl->needs_mission_space_start_state = true;
    return true;
 }
 void apply_starting_game_to_client(NetworkMessage &networkMessage) {
@@ -1604,7 +1608,7 @@ void client_process_pre_briefing() {
         ClientStartBriefingReq *restart_req = networkMessage.mutable_start_briefing_req();
         fprintf(stderr, "Starting requesting which briefing to load\n");
         if (!send_msg(client->clientSocket, networkMessage).ok()) {
-            fprintf(stderr, "Failed to connect\n");
+            fprintf(stderr, "Failed to connect and send briefing\n");
             client->is_fresh = true;
             uninit_network();
             return;
@@ -1734,22 +1738,27 @@ void process_network(bool ignoreClientUpdate) {
         apply_starting_game_to_client(networkMessage);
     }
     if (client && client->is_fresh) {
-        networkMessage.Clear();
-        Connect *connect = networkMessage.mutable_connect();
-        connect->set_callsign(client->callsign);
-        if (!send_msg(client->clientSocket, networkMessage).ok()) {
-            uninit_network();
-            return;
+        if (!client->has_sent_connect) {
+            networkMessage.Clear();
+            Connect *connect = networkMessage.mutable_connect();
+            connect->set_callsign(client->callsign);
+            if (!send_msg(client->clientSocket, networkMessage).ok()) {
+                uninit_network();
+                return;
+            }
+            client->has_sent_connect = true;
         }
         networkMessage.Clear();
-        if (!recv_msg<&NetworkMessage::has_game>(client->clientSocket, SocketHolder::GAME_FRAME, networkMessage).ok()) {
-            uninit_network();
-            return;
+        if (false && !removeme) {
+            if (!recv_msg<&NetworkMessage::has_game>(client->clientSocket, SocketHolder::GAME_FRAME, networkMessage).ok()) {
+                uninit_network();
+                return;
+            }
+            if (client) {
+                client->is_fresh = false;
+            }
+            apply_starting_game_to_client(networkMessage);
         }
-        if (client) {
-            client->is_fresh = false;
-        }
-        apply_starting_game_to_client(networkMessage);
     }
 
     if (server) {
@@ -1757,7 +1766,7 @@ void process_network(bool ignoreClientUpdate) {
         populate_server_frame(&pendingState.frame());
         for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
             if (!c->is_disconnected()) {
-                if (c->needs_mission_space_start_state) {
+                if (c->needs_mission_space_start_state && false && removeme) { // turn this off for now--make it entirely request based
                     if (!send_start_state(networkMessage, &*c)) {
                         c->disconnect();
                         continue;
@@ -2441,7 +2450,6 @@ void despawn_all() {
 }
 
 int chat_polling_interval = 0;
-
 void wc_net_check_cpu_hooks() {
     if (++chat_polling_interval == 1000) {
         chat_polling_interval = 0;
@@ -2459,7 +2467,7 @@ void wc_net_check_cpu_hooks() {
                 mission_id, series_id);
                 
     }
-    if (reg_eip == 0x0470 && isExecutingOverlay(STUB161, 0x20)) {
+    if (reg_eip == 0x0470 && isExecutingOverlay(STUB161, 0x20) &&  removeme) {
         Bit8u mission_id = mem_readb(DS_OFF + DS_missionId);
         Bit8u series_id = mem_readb(DS_OFF + DS_seriesId);
         within_briefed_mission = 1;
@@ -2583,10 +2591,49 @@ void wc_net_check_cpu_hooks() {
             client->last_received_victory_points_plus_one = 0;
         }
     }
-    if (skipBarracks && isExecutingFunction(STUB150, 0x00AC)) {
-        skipBarracks = false;
-        reg_eax = 7;
-        reg_eip = 0x1391; // ret
+    if (isExecutingFunction(STUB150, 0x00AC)) {
+        if (removeme) {
+        int maxRetries = 10;
+        for (int i=0;i< maxRetries; i += 1) {
+            if (!client && !server) {
+                init_network();
+            }
+            fprintf(stderr, "Initializing with server %p client %p\n", server, client);
+            if (server == NULL && client == NULL) {
+                sleep(1);
+                continue;
+            }
+            if (server) {
+                wait_for_at_least_1_client();
+                fprintf(stderr, "Server got 1 client\n");
+                break;
+            }
+            if (client) {
+                NetworkMessage networkMessage;
+                Connect *connect = networkMessage.mutable_connect();
+                connect->set_callsign(client->callsign);
+                if (!send_msg(client->clientSocket, networkMessage).ok()) {
+                    uninit_network();
+                    fprintf(stderr, "Client Connect Retry %d\n", i);
+                    if (i+1 ==maxRetries) {
+                        // FIXME: exit back to dos so the user can select a different port or somesuch
+                        // probably can use the dos door exit option
+                    }else {
+                        sleep(2);
+                    }
+                    continue;
+                }
+                client->has_sent_connect = true;
+                fprintf(stderr, "Client connected successfully\n");
+                break;
+            }
+        }
+        }
+        if (skipBarracks) {
+            skipBarracks = false;
+            reg_eax = 7;
+            reg_eip = 0x1391; // ret
+        }
     }
     // Skip orchestra...
     if (reg_eip == 0x04F2 && SegValue(cs) == SEG001) {
