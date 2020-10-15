@@ -1604,6 +1604,7 @@ void client_process_pre_briefing() {
         init_network();
     }
     if (client) {
+        client->has_restarted_mission = true;
         NetworkMessage networkMessage;
         ClientStartBriefingReq *restart_req = networkMessage.mutable_start_briefing_req();
         fprintf(stderr, "Starting requesting which briefing to load\n");
@@ -1718,14 +1719,8 @@ void process_network(bool ignoreClientUpdate) {
     }
     if (client && client->has_restarted_mission) {
         client->has_restarted_mission = false;
-        networkMessage.Clear();
-        ClientStartMissionReq *restart_req = networkMessage.mutable_start_mission_req();
-        if (!send_msg(client->clientSocket, networkMessage).ok()) {
-            client->is_fresh = true;
-            uninit_network();
-            return;
-        }
         while (true) {
+            fprintf(stderr, "awaiting full game state\n");
             if (!recv_msg<&NetworkMessage::IsInitialized>(client->clientSocket, SocketHolder::GAME_FRAME, networkMessage).ok()) {
                 client->is_fresh = true;
                 uninit_network();
@@ -1766,7 +1761,7 @@ void process_network(bool ignoreClientUpdate) {
         populate_server_frame(&pendingState.frame());
         for (ServerState::ClientVec::iterator c = server->clients.begin(), ce=server->clients.end(); c != ce; ++c) {
             if (!c->is_disconnected()) {
-                if (c->needs_mission_space_start_state && false && removeme) { // turn this off for now--make it entirely request based
+                if (c->needs_mission_space_start_state) { // turn this off for now--make it entirely request based
                     if (!send_start_state(networkMessage, &*c)) {
                         c->disconnect();
                         continue;
@@ -1846,8 +1841,7 @@ void process_network(bool ignoreClientUpdate) {
             }
             apply_frame(networkMessage.frame(), applyOwnPosition);
         } else {
-            client->has_restarted_mission = true;
-            fprintf(stderr, "Ignoring frame with epoch %d instead of client's %d... going to resend state\n",
+            fprintf(stderr, "Ignoring frame with epoch %d instead of client's %d... previously would have resend state\n",
                     networkMessage.epoch(), client->epoch);
         }
     }
@@ -2609,22 +2603,24 @@ void wc_net_check_cpu_hooks() {
                 break;
             }
             if (client) {
-                NetworkMessage networkMessage;
-                Connect *connect = networkMessage.mutable_connect();
-                connect->set_callsign(client->callsign);
-                if (!send_msg(client->clientSocket, networkMessage).ok()) {
-                    uninit_network();
-                    fprintf(stderr, "Client Connect Retry %d\n", i);
-                    if (i+1 ==maxRetries) {
-                        // FIXME: exit back to dos so the user can select a different port or somesuch
-                        // probably can use the dos door exit option
-                    }else {
-                        sleep(2);
+                if (!client->has_sent_connect) {
+                    NetworkMessage networkMessage;
+                    Connect *connect = networkMessage.mutable_connect();
+                    connect->set_callsign(client->callsign);
+                    if (!send_msg(client->clientSocket, networkMessage).ok()) {
+                        uninit_network();
+                        fprintf(stderr, "Client Connect Retry %d\n", i);
+                        if (i+1 ==maxRetries) {
+                            // FIXME: exit back to dos so the user can select a different port or somesuch
+                            // probably can use the dos door exit option
+                        }else {
+                            sleep(2);
+                        }
+                        continue;
                     }
-                    continue;
+                    client->has_sent_connect = true;
+                    fprintf(stderr, "Client connected successfully\n");
                 }
-                client->has_sent_connect = true;
-                fprintf(stderr, "Client connected successfully\n");
                 break;
             }
         }
