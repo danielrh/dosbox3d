@@ -27,7 +27,7 @@ bool DEBUG_PROTOBUF =
 #endif
     ;
 bool removeme = true;
-
+bool has_started_up = false;
 // only in heavy debug;
 extern bool forceBreak;
 int in_simulation = 0;
@@ -166,7 +166,6 @@ struct SocketHolder {
         sock = newSock;
     }
 };
-
 struct RemoteClient {
     NetworkShipId id;
     SocketHolder clientSocket;
@@ -332,6 +331,10 @@ struct ClientState {
         }
     }
 } *client = NULL;
+
+bool is_wc_connected() {
+    return (client || server) && has_started_up;
+}
 
 bool is_net_id_mapped(int net_id) {
     if (server) {
@@ -643,6 +646,26 @@ RecvStatus peek_recv_msg_a(SocketHolder &sockHolder, SocketHolder::MessageCatego
         return RecvStatus::FAIL_NO_DATA();
     }
     return RecvStatus::OK();
+}
+bool in_space() {
+    if (!within_briefed_mission) {
+        return false;
+    }
+    if (server) {
+        for (std::vector<RemoteClient>::iterator i = server->clients.begin(), ie = server->clients.end(); i != ie ;++i) {
+            if (i->needs_mission_space_start_state) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if (client) {
+        if (client->has_restarted_mission) {
+            return false;
+        }
+        return true;
+    }
+    return false;
 }
 bool prior_epoch(NetworkMessage *n) {
     if (!server) {
@@ -2508,6 +2531,7 @@ void wc_net_check_cpu_hooks() {
     }
     if (reg_eip == 0x112e    && isExecutingOverlay(STUB162, 0x2a)) { // simulator start
         in_simulation += 1;
+        incoming_text = ""; // remove incoming text display
         fprintf(stderr, "insim inc to %d\n", in_simulation);
     }
     if (in_simulation) {
@@ -2633,6 +2657,7 @@ void wc_net_check_cpu_hooks() {
     }
     // Skip orchestra...
     if (reg_eip == 0x04F2 && SegValue(cs) == SEG001) {
+        has_started_up = true;
         reg_eip += 5;
     }
     if (client) {
@@ -2727,6 +2752,7 @@ void wc_net_check_cpu_hooks() {
     //        forceBreakAlternate = !forceBreakAlternate;
     //}
     if (SegValue(cs) == SEG001 && reg_eip == 0x0512) {
+        has_started_up = true;
         // somehow we need to convince it we've loaded a mission so we can go back to launch area
         char *misenv = getenv("MIS");
         char *serenv = getenv("SERIES");

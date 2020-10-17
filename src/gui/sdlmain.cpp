@@ -1552,9 +1552,14 @@ bool GFX_StartUpdate(Bit8u * & pixels,Bitu & pitch) {
     textPitch = pitch;
     return ret;
 }
+bool is_wc_connected();
+extern bool within_briefed_mission;
+extern bool in_space();
 std::string outgoing_prefix = "[Transmit Comms] ";
+size_t last_incoming_text_len = 0;
 std::string incoming_text="";
-std::string outgoing_text="";//OUTGOING TEXT THAT GOES ON AND ON AND ON AND ON AND ON AND ON AND ON AND ON AND ON";
+size_t last_outgoing_text_len = 0;
+std::string outgoing_text="To transmit comms use the \'0\' key";//OUTGOING TEXT THAT GOES ON AND ON AND ON AND ON AND ON AND ON AND ON AND ON AND ON";
 extern Bit8u int10_font_14[256 * 14];
 static void DrawText(Bitu x,Bitu y,const char * text,Bit8u color, Bit8u *surface, Bitu pitch) {
     Bitu step  = pitch /sdl.draw.width;
@@ -1595,8 +1600,31 @@ void GFX_EndUpdate( const Bit16u *changedLines ) {
     Bit16u fakeChangedLines[2];
     if (true) {
         if (textPixels) {
-            DrawText(48,48, incoming_text.c_str(), 0x80, textPixels, textPitch);
-            DrawText(48,48 + 14 + 14, outgoing_text.c_str(), 0x80, textPixels, textPitch);
+            if (!in_space()) {
+                std::string lengthen;
+                std::string * to_write = &incoming_text;
+                if (last_incoming_text_len > incoming_text.length()) {
+                    lengthen = incoming_text;
+                    to_write = &lengthen;
+                    for (size_t i = incoming_text.length(); i < last_incoming_text_len; i += 1) {
+                        lengthen += " ";
+                    }
+                }
+                last_incoming_text_len = incoming_text.length();
+                DrawText(48,48, to_write->c_str(), 0x80, textPixels, textPitch);
+            }
+            std::string lengthen;
+            std::string * to_write = &outgoing_text;
+            
+            if (last_outgoing_text_len > outgoing_text.length()) {
+                lengthen = outgoing_text;
+                to_write = &lengthen;
+                for (size_t i = outgoing_text.length(); i < last_outgoing_text_len; i += 1) {
+                    lengthen += " ";
+                }
+            }
+            last_outgoing_text_len = outgoing_text.length();
+            DrawText(48,48 + 14 + 14, to_write->c_str(), 0x80, textPixels, textPitch);
         }
         fakeChangedLines[0] = sdl.draw.height;
         fakeChangedLines[1] = 1;
@@ -2282,7 +2310,7 @@ void GFX_HandleVideoResize(int width, int height) {
 #endif
 
 bool kGlobalKeyDisable = false;
-
+bool kJustSentMessage = false;
 void GFX_Events() {
 	SDL_Event event;
 #if defined (REDUCE_JOYSTICK_POLLING)
@@ -2508,30 +2536,41 @@ void GFX_Events() {
 		default:
             {
 			void MAPPER_CheckEvent(SDL_Event * event);
-            if (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_0 && !kGlobalKeyDisable) {
-                kGlobalKeyDisable = true;
-                outgoing_text = outgoing_prefix;
+            if (is_wc_connected()) {
+                if (event.type == SDL_KEYDOWN && ((within_briefed_mission && event.key.keysym.sym == SDLK_RETURN && event.key.keysym.mod != KMOD_LSHIFT) || event.key.keysym.sym == SDLK_0) && !kGlobalKeyDisable) {
+                    // enter (shift-enter or kp-enter fire missiles)
+                    kGlobalKeyDisable = true;
+                    outgoing_text = outgoing_prefix;
 #if SDL_VERSION_ATLEAST(2,0,0)
-                SDL_StartTextInput();
+                    SDL_StartTextInput();
 #endif
-                // Start typing!
-            }
-            if (event.type == SDL_KEYUP && (
-                    event.key.keysym.sym == SDLK_KP_ENTER ||
-                    event.key.keysym.sym == SDLK_RETURN ||
-                    event.key.keysym.sym == SDLK_RETURN2) && kGlobalKeyDisable) {
-                kGlobalKeyDisable = false;
-#if SDL_VERSION_ATLEAST(2,0,0)
-                SDL_StopTextInput();
-#endif
-                extern void wcnetSendChatMessage(const std::string &msg);
-                size_t prompt_len = outgoing_prefix.length();
-                if (prompt_len < outgoing_text.length()) {
-                    wcnetSendChatMessage(outgoing_text.substr(prompt_len));
-                }else {
-                    fprintf(stderr, "Could not send a message %s\n", outgoing_text.c_str());
+                    // Start typing!
+                } else if (event.type == SDL_KEYDOWN && (
+                               event.key.keysym.sym == SDLK_KP_ENTER ||
+                               event.key.keysym.sym == SDLK_RETURN ||
+                               event.key.keysym.sym == SDLK_RETURN2) && kGlobalKeyDisable) {
+                    kJustSentMessage = true;
+                    
+                    extern void wcnetSendChatMessage(const std::string &msg);
+                    size_t prompt_len = outgoing_prefix.length();
+                    if (prompt_len < outgoing_text.length()) {
+                        wcnetSendChatMessage(outgoing_text.substr(prompt_len));
+                    }else {
+                        fprintf(stderr, "Could not send a message %s\n", outgoing_text.c_str());
+                    }
+                    outgoing_text = "";
                 }
-                outgoing_text = "";
+                if (kJustSentMessage && event.type == SDL_KEYUP && (
+                               event.key.keysym.sym == SDLK_KP_ENTER ||
+                               event.key.keysym.sym == SDLK_RETURN ||
+                               event.key.keysym.sym == SDLK_RETURN2) && kGlobalKeyDisable) {
+#if SDL_VERSION_ATLEAST(2,0,0)
+                    SDL_StopTextInput();
+#endif
+                    kGlobalKeyDisable = false;
+                    kJustSentMessage = false;
+                    return;
+                }
             }
 #if SDL_VERSION_ATLEAST(2,0,0)
             if (event.type == SDL_TEXTINPUT)
@@ -2552,8 +2591,16 @@ void GFX_Events() {
 #endif
                 outgoing_text += str;
             }
+            if (event.type == SDL_KEYDOWN && kGlobalKeyDisable && event.key.keysym.sym == SDLK_BACKSPACE) {
+                if (outgoing_text.length() > outgoing_prefix.length()) {
+                    outgoing_text = outgoing_text.substr(0, outgoing_text.length() - 1);
+                }
+            }
             if ((event.type == SDL_KEYDOWN || event.type == SDL_KEYUP) && kGlobalKeyDisable) {
                 return;
+            }
+            if (event.key.keysym.sym  == SDLK_SEMICOLON) {
+                event.key.keysym.sym = SDLK_RETURN;
             }
 			MAPPER_CheckEvent(&event);
             }
