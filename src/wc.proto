@@ -100,6 +100,7 @@ message Frame {
 // Connect -> once per mission
 message Connect {
     optional string callsign = 1;
+    optional string lastname = 2;
 }
 
 message Game {
@@ -117,6 +118,7 @@ message ClientStartBriefingReq {
 message Chat {
     optional string message = 1;
     optional uint32 ship_id = 2;
+    optional string callsign = 3;
 }
 message ServerSendBriefingStart {
     optional uint32 mission_id = 1;

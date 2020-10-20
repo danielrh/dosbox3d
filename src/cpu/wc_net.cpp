@@ -236,11 +236,58 @@ struct ServerState {
     }
 } *server = NULL;
 
+std::string copy_str_from_vm(Bit32u off, Bit16u maxLen) {
+    std::string ret;
+    for (Bit16u i =0; i < maxLen; i += 1) {
+        Bit8u curChar = 0;
+        mem_readb_checked(off + i, &curChar);
+        if (!curChar) {
+            break;
+        }
+        ret.push_back((char)curChar);
+    }
+    return ret;
+}
+
+void copy_str_to_vm(Bit32u off, Bit16u maxLen, const std::string&callsign) {
+    for (Bit16u i =0; i +1 < maxLen && i < callsign.length(); i += 1) {
+        char curChar = callsign[i];
+        mem_writeb_checked(off + i, curChar);
+        mem_writeb_checked(off + i + 1, 0); // zero pad
+    }
+}
+
+const Bit16u DS_LAST_NAME_OFF = 0x9a42;
+const Bit16u DS_CALLSIGN_OFF = 0x9a50;
+std::string getLastName() {
+    std::string saved_last_name = copy_str_from_vm(DS_OFF + DS_LAST_NAME_OFF, 14);
+    const char *lastname = getenv("WCLASTNAME");
+    if (lastname && lastname[0]) {
+        if (saved_last_name != lastname) {
+            saved_last_name = lastname;
+            copy_str_to_vm(DS_OFF + DS_LAST_NAME_OFF, 14, saved_last_name);
+        }
+    }
+    return saved_last_name;
+}
+
+std::string getCallsign() {
+    std::string saved_callsign = copy_str_from_vm(DS_OFF + DS_CALLSIGN_OFF, 14);
+    const char *callsign = getenv("WCCALLSIGN");
+    if (callsign && callsign[0]) {
+        if (saved_callsign != callsign) {
+            saved_callsign = callsign;
+            copy_str_to_vm(DS_OFF + DS_CALLSIGN_OFF, 14, saved_callsign);
+        }
+    }
+    return saved_callsign;
+}
 
 struct ClientState {
     SocketHolder clientSocket;
     NetworkShipId shipId;
     std::string callsign;
+    std::string lastname;
     std::vector<int> netToLocalMapping;
     GameState last_written_mission_status;
     uint32_t last_received_victory_points_plus_one;
@@ -260,13 +307,8 @@ struct ClientState {
        epoch(0),  // so it won't match server epoch of 1
        frame_number(0)
     {
-        last_written_mission_status = Proceed;
-        const char *cs = getenv("WCCALLSIGN");
-        if (cs) {
-            callsign = cs;
-        }
         if (callsign.empty()) {
-            callsign = "Maniac";
+            callsign = getCallsign();
         }
     }
     ~ClientState() {
@@ -455,6 +497,7 @@ bool is_client_authoritative(NetworkShipId sender, NetworkShipId id) {
 struct ChatMessage {
     int net_ship_id;
     std::string text;
+    std::string callsign;
 };
 
 class QueuedEvent {
@@ -2758,7 +2801,7 @@ void wc_net_check_cpu_hooks() {
         char *serenv = getenv("SERIES");
         int miss = atoi(misenv ? misenv : "0");
         int series = atoi(serenv ? serenv : "1");
-        if (miss != 0 || series != 0) {
+        if (miss != 0 || series != 1) { // set to 0 to always skip
             run_campaign(miss, series);
             skipBarracks = true;
             //forceBreak = true;
