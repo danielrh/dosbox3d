@@ -30,6 +30,7 @@ bool removeme = true;
 bool has_started_up = false;
 // only in heavy debug;
 extern bool forceBreak;
+extern std:: string incoming_text;
 int in_simulation = 0;
 int within_briefed_mission = 0;
 void  load_mission_tree_progress(const std::string &mission_tree_data);
@@ -1648,6 +1649,7 @@ void wcnetSendChatMessage(const std::string &msg) {
     Chat *chat_msg = networkMessage.mutable_chat();
     chat_msg->set_ship_id(client ? client->shipId.to_net() : 0);
     chat_msg->set_message(msg);
+    chat_msg->set_callsign(getCallsign());
     fprintf(stderr, "Sending chat message %s\n", msg.c_str());
     if (client) {
         if (!send_msg(client->clientSocket, networkMessage).ok()) {
@@ -1777,6 +1779,7 @@ void process_network(bool ignoreClientUpdate) {
   }
     */
     gFrameNum++;
+    incoming_text = "";
     //fprintf(stderr, "Start process_network for frame %d\n", gFrameNum);
     static NetworkMessage networkMessage;
     networkMessage.Clear();
@@ -1923,16 +1926,22 @@ void process_network(bool ignoreClientUpdate) {
         gIgnoreNextProcessNetwork = true;
     }
 }
-extern std:: string incoming_text;
+std::string formatChat(const std::string &callsign, const std::string &text) {
+    if (callsign.length() == 1 || callsign.length() == 0 || callsign == "BLUEHAIR") {
+        return text;
+    }
+    return callsign + ": " + text;
+}
+
+
 void handle_incoming_chat(const Chat &chat) {
     //extern std::string incoming_text;
-    if (!in_simulation) {
-        incoming_text = chat.message();
-    }
+    incoming_text = formatChat(chat.callsign(), chat.message());
     //NetworkShipId::from_net
     chatEvents.push_back(ChatMessage());
     chatEvents.back().chatMessage.net_ship_id = chat.ship_id();
     chatEvents.back().chatMessage.text = chat.message();
+    chatEvents.back().chatMessage.callsign = chat.callsign();
     //go_to_trampoline();
 }
 
@@ -2238,15 +2247,20 @@ d - capship
  */
 bool enable_damage = true;
 bool enable_all_damage = true;
+ 
 void process_trampoline() {
     //fprintf(stderr, "Trampoline: start %d\n", (int)queuedEvents.size());
     gIsProcessingTrampoline = true;
     {
         if (gCurrentEvent.type == QueuedEvent::CHAT_MESSAGE) {
-            fprintf(stderr, "Writing chat message %s\n", gCurrentEvent.chatMessage.text.c_str());
-            std::string msgstr = gCurrentEvent.chatMessage.text.substr(0, comm_global_txt_length - 1);
-            const char *msg = msgstr.c_str();
-            for (unsigned i = 0; i < msgstr.length() + 1; i++) {
+            std::string formattedChatMessage = formatChat(gCurrentEvent.chatMessage.callsign, gCurrentEvent.chatMessage.text);
+            fprintf(stderr, "Writing chat message %s\n", formattedChatMessage.c_str());
+            size_t msglen = formattedChatMessage.length();
+            if (msglen > comm_global_txt_length - 1) {
+                msglen = comm_global_txt_length - 1;
+            }
+            const char *msg = formattedChatMessage.c_str();
+            for (unsigned i = 0; i < msglen + 1; i++) {
                 mem_writeb_checked(DS_OFF + DS_comm_global_txt + i, msg[i]);
             }
         }
