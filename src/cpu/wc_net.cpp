@@ -33,6 +33,11 @@ extern bool forceBreak;
 extern std:: string incoming_text;
 int in_simulation = 0;
 int within_briefed_mission = 0;
+void liven_everyone() {
+    for (int i= 0;i < 8; i+=1) {
+        mem_writed_checked(DS_OFF + DS_statusPilots + i, 0);
+    }
+}
 void  load_mission_tree_progress(const std::string &mission_tree_data);
 Bit8u u8(Bit32u data) {
     assert(data <256);
@@ -2542,6 +2547,7 @@ void wc_net_check_cpu_hooks() {
                 
     }
     if (reg_eip == 0x0470 && isExecutingOverlay(STUB161, 0x20) &&  removeme) {
+        liven_everyone();
         Bit8u mission_id = mem_readb(DS_OFF + DS_missionId);
         Bit8u series_id = mem_readb(DS_OFF + DS_seriesId);
         within_briefed_mission = 1;
@@ -2730,6 +2736,7 @@ void wc_net_check_cpu_hooks() {
         }
     }
     if (reg_eip == 0x4dd && isExecutingOverlay(STUB161, 0x20)) { // mission ended for some reason, at correct callsite
+        liven_everyone(); // don't want a sob story about how wing people had died
         within_briefed_mission = 0;
         if (client) {
             if (client->mission_tree_progress.length()) {

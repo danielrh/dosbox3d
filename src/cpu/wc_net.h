@@ -174,6 +174,7 @@ enum DataSegValues {
     DS_entity_types = 0xBD1A,
     DS_entity_allocated = 0xACC4,
     DS_victoryPoints = 0xC280,
+    DS_statusPilots = 0xc260, // byte array whether pilots are KIA
     DS_missionId = 0xC255,
     DS_seriesId = 0xC256,
     DS_hasLoadedSaveGame = 0x300c,
